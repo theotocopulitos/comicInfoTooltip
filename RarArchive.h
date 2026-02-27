@@ -1,0 +1,67 @@
+// RarArchive.h : CBR file handling
+
+#pragma once
+
+struct RarFileInfo
+{
+    std::wstring FileName;
+    DWORD FileSize;
+    DWORD CompressedSize;
+    DWORD CRC32;
+    DWORD FileOffset;
+    bool IsDirectory;
+};
+
+class RarArchive
+{
+public:
+    RarArchive();
+    ~RarArchive();
+
+    // Open a RAR archive
+    bool Open(const std::wstring& filePath);
+    
+    // Close the archive
+    void Close();
+    
+    // Check if archive is open
+    bool IsOpen() const { return m_hFile != INVALID_HANDLE_VALUE; }
+    
+    // Get list of files in archive
+    std::vector<RarFileInfo> GetFileList();
+    
+    // Extract a file to memory
+    std::vector<BYTE> ExtractFile(const std::wstring& fileName);
+    
+    // Extract a file to a temporary file
+    std::wstring ExtractFileToTemp(const std::wstring& fileName);
+    
+    // Find first image file (for cover)
+    std::wstring FindFirstImageFile();
+    
+    // Check if ComicInfo.xml exists
+    bool HasComicInfoXML();
+    
+    // Extract ComicInfo.xml content
+    std::wstring ExtractComicInfoXML();
+
+private:
+    HANDLE m_hFile;
+    std::wstring m_filePath;
+    
+    // RAR file structure parsing
+    bool ParseRarHeader();
+    bool ReadRarFileHeader(const RarFileInfo& fileInfo, std::vector<BYTE>& data);
+    
+    // Helper methods
+    DWORD ReadDWord(BYTE* buffer, int offset);
+    WORD  ReadWord (BYTE* buffer, int offset);
+    std::vector<BYTE> ReadBytes(DWORD offset, DWORD size);
+    
+    // File list
+    std::vector<RarFileInfo> m_fileList;
+    
+    // Clean up temporary files
+    void CleanupTempFiles();
+    std::vector<std::wstring> m_tempFiles;
+};
