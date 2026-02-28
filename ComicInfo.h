@@ -2,17 +2,32 @@
 
 #pragma once
 
-// ComicInfo.xml data structure
+// ComicInfo.xml data structure  (v2.1 schema)
 struct ComicInfoData
 {
+    // ── Identity ──
     std::wstring Title;
     std::wstring Series;
     std::wstring Number;
+    std::wstring Count;              // total issues in series
     std::wstring Volume;
-    std::wstring Issue;
-    std::wstring Publisher;
-    std::wstring PublicationDate;
-    std::wstring Genre;
+
+    // ── Alternate series ──
+    std::wstring AlternateSeries;
+    std::wstring AlternateNumber;
+    std::wstring AlternateCount;
+
+    // ── Text blocks ──
+    std::wstring Summary;
+    std::wstring Notes;
+    std::wstring Review;
+
+    // ── Date ──
+    std::wstring Year;
+    std::wstring Month;
+    std::wstring Day;
+
+    // ── Creative team ──
     std::wstring Writer;
     std::wstring Penciller;
     std::wstring Inker;
@@ -20,25 +35,36 @@ struct ComicInfoData
     std::wstring Letterer;
     std::wstring CoverArtist;
     std::wstring Editor;
-    std::wstring Summary;
-    std::wstring Notes;
+    std::wstring Translator;         // v2.1
+
+    // ── Publishing ──
+    std::wstring Publisher;
+    std::wstring Imprint;            // v2.1
+    std::wstring Genre;
+    std::wstring Tags;               // v2.0
     std::wstring Web;
+    std::wstring Format;
+    std::wstring GTIN;               // v2.1 (ISBN / barcode)
+
+    // ── Numeric / enum ──
     std::wstring PageCount;
     std::wstring LanguageISO;
-    std::wstring Manga;
-    std::wstring BlackAndWhite;
+    std::wstring BlackAndWhite;      // Yes / No / Unknown
+    std::wstring Manga;              // Yes / No / YesAndRightToLeft / Unknown
     std::wstring AgeRating;
-    std::wstring Team;
-    std::wstring Location;
+    std::wstring CommunityRating;    // 0.0–5.0
+
+    // ── Story / characters ──
     std::wstring Characters;
+    std::wstring Teams;
+    std::wstring Locations;
+    std::wstring MainCharacterOrTeam;
     std::wstring StoryArc;
     std::wstring StoryArcNumber;
     std::wstring SeriesGroup;
-    std::wstring AltSeries;
-    std::wstring AltNumber;
-    std::wstring AltIssueNumber;
-    std::wstring MainCharacterOrTeam;
-    std::wstring Review;
+
+    // ── Scan ──
+    std::wstring ScanInformation;
 };
 
 class ComicInfoParser
