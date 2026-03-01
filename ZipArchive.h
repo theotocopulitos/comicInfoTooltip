@@ -5,10 +5,11 @@
 struct ZipFileInfo
 {
     std::wstring FileName;
-    DWORD FileSize;
+    DWORD FileSize;        // uncompressed size
     DWORD CompressedSize;
     DWORD CRC32;
     DWORD FileOffset;
+    WORD  CompressionMethod; // 0=store, 8=deflate
     bool IsDirectory;
 };
 

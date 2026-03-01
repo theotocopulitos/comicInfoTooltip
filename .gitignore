@@ -1,0 +1,31 @@
+# Build output
+x64/
+Debug/
+Release/
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.log
+*.tlog
+*.iobj
+*.ipdb
+*.idb
+*.res
+
+# VS intermediate directories
+ComicTooltipExt/
+TestPropHandler/
+
+# User-specific files
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+.vs/
+
+# Debug logs
+ComicPreview_debug.log

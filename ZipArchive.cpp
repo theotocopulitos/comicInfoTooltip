@@ -194,13 +194,21 @@ bool ZipArchive::ParseCentralDirectoryEntries(DWORD offset, DWORD size)
         fi.CompressedSize = ReadDWord(cd.data(), pos + 20);
         fi.FileSize       = ReadDWord(cd.data(), pos + 24);
 
+        fi.CompressionMethod = ReadWord(cd.data(), pos + 10);
+
         WORD fnLen    = ReadWord(cd.data(), pos + 28);
         WORD extraLen = ReadWord(cd.data(), pos + 30);
         WORD cmtLen   = ReadWord(cd.data(), pos + 32);
 
-        // External file attributes: bit 4 of high byte = directory (MS-DOS)
+        // Determine directory status from external attributes
         DWORD extAttr = ReadDWord(cd.data(), pos + 38);
-        fi.IsDirectory = ((extAttr >> 16) & 0x10) != 0;
+        BYTE versionMadeByOS = cd[pos + 5]; // high byte of "version made by"
+        fi.IsDirectory = false;
+        if (versionMadeByOS == 0) // MS-DOS / FAT
+            fi.IsDirectory = (extAttr & 0x10) != 0;
+        else if (versionMadeByOS == 3) // Unix
+            fi.IsDirectory = ((extAttr >> 16) & 0x4000) != 0; // S_IFDIR
+        // FileSize == 0 is also a hint but not conclusive
 
         fi.FileOffset = ReadDWord(cd.data(), pos + 42);
 
@@ -218,7 +226,7 @@ bool ZipArchive::ParseCentralDirectoryEntries(DWORD offset, DWORD size)
                 fi.FileName.resize(wlen);
                 ::MultiByteToWideChar(cp, 0, pName, fnLen, &fi.FileName[0], wlen);
             }
-            // Also detect directory by trailing slash
+            // Trailing slash is the most reliable directory indicator
             if (!fi.FileName.empty() && fi.FileName.back() == L'/')
                 fi.IsDirectory = true;
         }
@@ -239,8 +247,57 @@ bool ZipArchive::ReadLocalFileHeader(const ZipFileInfo& fileInfo, std::vector<BY
     WORD extraLen = ReadWord(hdr.data(), 28);
     DWORD dataOff = fileInfo.FileOffset + 30 + fnLen + extraLen;
 
-    // Only store-method (0) supported here; compressed files get raw bytes
-    data = ReadBytes(dataOff, fileInfo.CompressedSize);
+    // Read the compression method from the local file header (offset 8)
+    WORD localMethod = ReadWord(hdr.data(), 8);
+
+    std::vector<BYTE> raw = ReadBytes(dataOff, fileInfo.CompressedSize);
+    if (raw.empty()) return false;
+
+    if (localMethod == 0)
+    {
+        // Store method: data is uncompressed
+        data = std::move(raw);
+    }
+    else if (localMethod == 8)
+    {
+        // Deflate: use Windows Compression API
+        DECOMPRESSOR_HANDLE hDecomp = NULL;
+        if (!CreateDecompressor(COMPRESS_ALGORITHM_MSZIP, NULL, &hDecomp))
+        {
+            // Fallback: try raw inflate via a simpler approach
+            // MSZIP might not match raw deflate. Try COMPRESS_RAW | COMPRESS_ALGORITHM_DEFLATE
+            // which is not available. Instead, return raw bytes and let GDI+ try.
+            data = std::move(raw);
+            return true;
+        }
+
+        // Use uncompressed size from central directory
+        DWORD uncompSize = fileInfo.FileSize;
+        if (uncompSize == 0) uncompSize = fileInfo.CompressedSize * 4; // estimate
+        data.resize(uncompSize);
+
+        SIZE_T actualSize = 0;
+        BOOL ok = Decompress(hDecomp, raw.data(), raw.size(),
+                             data.data(), data.size(), &actualSize);
+        if (!ok)
+        {
+            // MSZIP wraps deflate with a 2-byte header per block.
+            // Raw deflate streams won't decompress with MSZIP.
+            // Return raw bytes — if the CBZ was created with store-mode JPEGs
+            // this shouldn't happen, but let's be safe.
+            CloseDecompressor(hDecomp);
+            data = std::move(raw);
+            return true;
+        }
+
+        data.resize(actualSize);
+        CloseDecompressor(hDecomp);
+    }
+    else
+    {
+        // Unsupported compression method — return raw
+        data = std::move(raw);
+    }
     return !data.empty();
 }
 

@@ -28,4 +28,10 @@
 #include <vector>
 #include <algorithm>
 
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
+
+#include <compressapi.h>
+#pragma comment(lib, "Cabinet.lib")
+
 using namespace ATL;

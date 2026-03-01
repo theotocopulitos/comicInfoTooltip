@@ -1,92 +1,140 @@
-# Comic Tooltip Shell Extension
+# Comic Shell Extension for Windows
 
-A Windows shell extension that displays rich tooltips for CBR and CBZ comic files, showing the comic cover and metadata in a two-column layout.
+A Windows shell extension that adds rich **tooltips** and a **preview pane** for `.cbz` and `.cbr` comic archive files in Explorer.
 
-## Features
+---
 
-- **Two-column tooltip layout**: Comic cover image on the left, metadata on the right
-- **Supports CBR and CBZ file formats**
-- **Extracts and displays ComicInfo.xml metadata** including:
-  - Title, Series, Volume, Issue numbers
-  - Publisher, Publication date, Genre
-  - Writer, Penciller, Inker, Colorist, Letterer, Cover Artist
-  - Story arc information, Characters
-  - Summary and additional metadata
-- **Fallback to basic file information** when metadata is unavailable
-- **Clean HTML-based tooltips** with modern styling
-- **Windows 10/11 compatible**
+## Quick Start
 
-## Requirements
+### Requirements
 
-- Windows 10 or Windows 11
-- Visual Studio 2022 with C++ ATL support
-- Administrator privileges for installation
+- Windows 10/11 (x64)
+- The pre-built DLL (`x64\Release\ComicTooltipExt.dll`), or Visual Studio 2022 with C++ ATL to build from source.
 
-## Building
+### Installation
 
-1. Open `ComicTooltipExt.vcxproj` in Visual Studio 2022
-2. Build the solution in Release or Debug configuration
-3. The output will be `ComicTooltipExt.dll`
+1. **Build** the project (Release, x64) or use the pre-built DLL.
+2. **Copy the DLL** to a permanent location (e.g. `C:\Windows\System32`).
+3. **Register** by right-clicking one of the batch files below and selecting **"Run as administrator"**:
 
-## Installation
+| Script | What it does |
+|---|---|
+| `register_all.bat` | Registers **both** tooltip and preview handlers |
+| `register_tooltip.bat` | Registers the **tooltip** handler only |
+| `register_preview.bat` | Registers the **preview pane** handler only |
 
-1. Run `install.bat` as Administrator
-2. Restart Windows Explorer to see the changes
+> **Important:** All registration scripts must run in an **elevated prompt** (Run as administrator). They will refuse to run otherwise.
 
-## Uninstallation
+4. **Restart Explorer** or log out/in for changes to take effect.
 
-1. Run `uninstall.bat` as Administrator
-2. Restart Windows Explorer to see the changes
+### Uninstallation
 
-## Usage
+Right-click the corresponding script as administrator:
 
-After installation, simply hover your mouse over any .cbr or .cbz file in Windows Explorer to see the tooltip with comic information and cover image.
+| Script | What it does |
+|---|---|
+| `unregister_all.bat` | Removes **both** handlers |
+| `unregister_tooltip.bat` | Removes the **tooltip** handler only |
+| `unregister_preview.bat` | Removes the **preview pane** handler only |
 
-## Technical Details
+### Usage
+
+- **Tooltip:** Hover over any `.cbz` or `.cbr` file in Explorer to see metadata (title, series, publisher, creative team, summary, etc.).
+- **Preview Pane:** Press `Alt+P` in Explorer to open the preview pane, then click a comic file. The cover image and full metadata are displayed side by side.
+
+### Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| Tooltip doesn't appear | Restart Explorer. Verify with `reg query "HKCR\.cbz\shellex\{00021500-0000-0000-C000-000000000046}"` |
+| Preview shows "No preview available" | Run `register_preview.bat` as admin. Check that `AppID` and `DisableLowILProcessIsolation` are set (the script does this). |
+| DLL can't be replaced / file locked | Close Explorer and kill `prevhost.exe` and `dllhost.exe` before copying. Use `deploy.bat` for development. |
+| Preview shows only the cover (from CDisplay/ComicRack) | The preview handler must also be registered under the ProgID. `register_preview.bat` handles this. |
+
+---
+
+## Technical Reference
+
+### Features
+
+- **Tooltip handler** (`IQueryInfo`): Plain-text tooltip with all ComicInfo.xml v2.1 fields, formatted with Unicode separators and sections.
+- **Preview handler** (`IPreviewHandler`): GDI+ rendered panel with cover image (left) and metadata (right) in a light theme. Supports resizing.
+- **Archive support**: Custom ZIP and RAR parsers (no external libraries). ZIP supports both store (method 0) and deflate (method 8) via the Windows Compression API.
+- **Metadata**: Full ComicInfo.xml v2.1 schema support including series, publication, creative team, story arcs, characters, ratings, and more.
 
 ### Architecture
 
-- **COM Shell Extension**: Implements `IQueryInfo` interface for tooltip handling
-- **ATL Framework**: Uses Active Template Library for COM infrastructure
-- **File Parsers**: Custom parsers for ZIP (CBZ) and RAR (CBR) formats
-- **XML Parser**: Simple ComicInfo.xml parser for metadata extraction
-- **HTML Tooltips**: Generates HTML content for rich tooltip display
-
-### File Structure
-
-```
-ComicTooltipExt.cpp/h    - Main COM class implementation
-ComicInfo.cpp/h          - ComicInfo.xml parser
-ZipArchive.cpp/h         - CBZ (ZIP) file handling
-RarArchive.cpp/h         - CBR (RAR) file handling
-dllmain.cpp              - DLL entry points and registration
-pch.h/cpp                - Pre-compiled headers
-*.idl, *.rc, *.rgs       - COM interface definitions and resources
-install.bat/uninstall.bat - Installation scripts
+```text
+ComicTooltipExt.dll
+├── COM entry points ─────────── dllmain.cpp
+├── Tooltip handler (IQueryInfo) ─ ComicTooltipExt.cpp/h
+├── Preview handler (IPreviewHandler) ─ ComicPreviewHandler.cpp/h
+├── Metadata parser ──────────── ComicInfo.cpp/h
+├── CBZ archive reader ────────── ZipArchive.cpp/h
+├── CBR archive reader ────────── RarArchive.cpp/h
+├── Precompiled headers ───────── pch.h/cpp
+└── Resources / IDL / DEF ─────── *.rc, *.idl, *.def, *.rgs
 ```
 
-### COM Registration
+### COM Classes
 
-The extension registers itself for the tooltip handler GUID `{00021500-0000-0000-C000-000000000046}` for both `.cbr` and `.cbz` file extensions.
+| Class | CLSID | Interfaces |
+|---|---|---|
+| `CComicTooltipExt` | `{A1B2C3D4-E5F6-7890-ABCD-EF1234567892}` | `IPersistFile`, `IQueryInfo` |
+| `CComicPreviewHandler` | `{B5E84A2F-3D71-4C8A-9F20-1A2B3C4D5E6F}` | `IPreviewHandler`, `IInitializeWithFile`, `IOleWindow`, `IObjectWithSite` |
 
-### Security Considerations
+### Shell Extension GUIDs
 
-- The extension runs in the Windows Explorer process
-- File access is read-only
-- Temporary files are created for cover images and cleaned up automatically
-- No network access or external dependencies
+| Handler | Shell Extension GUID |
+|---|---|
+| Tooltip (`IQueryInfo`) | `{00021500-0000-0000-C000-000000000046}` |
+| Preview (`IPreviewHandler`) | `{8895b1c6-b41f-4c1c-a562-0d564250836f}` |
 
-## Limitations
+### Registry Layout
 
-- RAR (CBR) support is simplified and assumes uncompressed files
-- For production use, consider integrating a full RAR library like UnRAR
-- Large comic files may have tooltip loading delays
-- HTML rendering is limited to Windows Explorer's built-in HTML capabilities
+The tooltip handler registers under:
+
+```text
+HKCR\.cbz\shellex\{00021500-...} = {A1B2C3D4-...}
+HKCR\.cbr\shellex\{00021500-...} = {A1B2C3D4-...}
+HKCR\CLSID\{A1B2C3D4-...}\InprocServer32 = <path to DLL>
+```
+
+The preview handler additionally requires:
+
+```text
+HKCR\CLSID\{B5E84A2F-...}\InprocServer32 = <path to DLL>
+HKCR\CLSID\{B5E84A2F-...}\AppID = {6d2b5079-2f0b-48dd-ab7f-97cec514d30b}
+HKCR\CLSID\{B5E84A2F-...}\DisableLowILProcessIsolation = 1 (DWORD)
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers\{B5E84A2F-...} = "Comic Preview Handler"
+HKCR\.cbz\shellex\{8895b1c6-...} = {B5E84A2F-...}
+HKCR\.cbr\shellex\{8895b1c6-...} = {B5E84A2F-...}
+```
+
+The `AppID` points to the `prevhost.exe` surrogate (`{6d2b5079-...}`), which is required because Windows runs preview handlers out-of-process for security. `DisableLowILProcessIsolation` allows the handler to read files from the user's drives.
+
+If a ProgID is registered for `.cbz`/`.cbr` (e.g. `cYo.ComicRack`), the preview handler must also be registered under that ProgID's `shellex` key.
+
+### Build Dependencies
+
+- **Visual Studio 2022** with C++ ATL/MFC workload
+- **GDI+** (`gdiplus.lib`) — for preview handler rendering
+- **Windows Compression API** (`Cabinet.lib`, `compressapi.h`) — for ZIP deflate decompression
+- No external libraries (no zlib, no UnRAR SDK)
+
+### Key Implementation Notes
+
+- **ZIP directory detection**: The `versionMadeByOS` byte in the central directory determines how to interpret external attributes. Unix-origin ZIPs use `S_IFDIR` (0x4000) in the high 16 bits; MS-DOS uses bit 0x10 in the low byte. Trailing slash is always checked as a fallback.
+- **DPI handling**: GDI+ page unit is set to `UnitPixel` and all fonts use `UnitPixel` to prevent DPI auto-scaling in RDP or high-DPI scenarios.
+- **GDI+ Fonts**: The `Gdiplus::Font` class has a deleted copy constructor. All font parameters must be passed as pointers.
+- **Double buffering**: The preview handler renders to an off-screen bitmap and blits to avoid flicker.
+
+### Security
+
+- Read-only file access; no writes except temporary files (cleaned up automatically).
+- No network access or external dependencies.
+- The preview handler runs in the `prevhost.exe` surrogate process, isolated from Explorer.
 
 ## License
 
 This project is provided as-is for educational and personal use.
-
-## Contributing
-
-Feel free to submit issues and enhancement requests!
