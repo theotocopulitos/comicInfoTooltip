@@ -353,13 +353,13 @@ void CComicPreviewHandler::PaintContent(HDC hdc, const RECT& rc)
 {
     int w = rc.right - rc.left;
     int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
 
-    // Double-buffer
-    HDC memDC = CreateCompatibleDC(hdc);
-    HBITMAP memBmp = CreateCompatibleBitmap(hdc, w, h);
-    HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+    // Render into a GDI+ Bitmap at exact pixel dimensions (avoids DPI scaling)
+    Bitmap bmp(w, h, PixelFormat32bppARGB);
+    bmp.SetResolution(96.0f, 96.0f);
 
-    Graphics g(memDC);
+    Graphics g(&bmp);
     g.SetPageUnit(UnitPixel);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
@@ -383,11 +383,10 @@ void CComicPreviewHandler::PaintContent(HDC hdc, const RECT& rc)
     DrawCoverImage(g, coverArea);
     DrawMetadata(g, metaArea);
 
-    // Blit
-    BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
-    SelectObject(memDC, oldBmp);
-    DeleteObject(memBmp);
-    DeleteDC(memDC);
+    // Blit the bitmap to the target DC
+    Graphics gDst(hdc);
+    gDst.SetPageUnit(UnitPixel);
+    gDst.DrawImage(&bmp, rc.left, rc.top, w, h);
 }
 
 void CComicPreviewHandler::DrawCoverImage(Graphics& g, const RectF& area)
