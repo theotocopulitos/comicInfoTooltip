@@ -338,8 +338,8 @@ void CComicPreviewHandler::DestroyPreviewWindow()
 void CComicPreviewHandler::NavigateToPage(int pageIndex)
 {
     if (pageIndex < 0 || pageIndex >= m_totalPages) return;
+    LoadPage(pageIndex);
     m_currentPage = pageIndex;
-    LoadPage(m_currentPage);
 }
 
 void CComicPreviewHandler::NavigatePrevious()
