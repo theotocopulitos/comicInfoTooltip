@@ -75,6 +75,7 @@ CComicPreviewHandler::CComicPreviewHandler()
 CComicPreviewHandler::~CComicPreviewHandler()
 {
     DestroyPreviewWindow();
+    CloseArchive();
     if (m_gdiplusToken)
         GdiplusShutdown(m_gdiplusToken);
 }
@@ -132,6 +133,7 @@ STDMETHODIMP CComicPreviewHandler::DoPreview()
 STDMETHODIMP CComicPreviewHandler::Unload()
 {
     DestroyPreviewWindow();
+    CloseArchive();
     m_coverData.clear();
     m_imageNames.clear();
     m_hasComicInfo = false;
@@ -208,6 +210,7 @@ bool CComicPreviewHandler::IsCBRFile() const
 
 void CComicPreviewHandler::LoadArchiveData()
 {
+    CloseArchive();
     m_imageNames.clear();
     m_coverData.clear();
     m_hasComicInfo = false;
@@ -216,10 +219,10 @@ void CComicPreviewHandler::LoadArchiveData()
 
     if (IsCBZFile())
     {
-        ZipArchive zip;
-        if (zip.Open(m_filePath))
+        auto zip = std::make_unique<ZipArchive>();
+        if (zip->Open(m_filePath))
         {
-            auto files = zip.GetFileList();
+            auto files = zip->GetFileList();
             for (auto& f : files)
             {
                 if (!f.IsDirectory && IsImageFile(f.FileName))
@@ -228,19 +231,19 @@ void CComicPreviewHandler::LoadArchiveData()
             std::sort(m_imageNames.begin(), m_imageNames.end());
             m_totalPages = (int)m_imageNames.size();
 
-            std::wstring xmlContent = zip.ExtractComicInfoXML();
+            std::wstring xmlContent = zip->ExtractComicInfoXML();
             if (!xmlContent.empty())
                 m_hasComicInfo = m_parser.ParseFromXML(xmlContent);
 
-            zip.Close();
+            m_pZip = std::move(zip);
         }
     }
     else if (IsCBRFile())
     {
-        RarArchive rar;
-        if (rar.Open(m_filePath))
+        auto rar = std::make_unique<RarArchive>();
+        if (rar->Open(m_filePath))
         {
-            auto files = rar.GetFileList();
+            auto files = rar->GetFileList();
             for (auto& f : files)
             {
                 if (!f.IsDirectory && IsImageFile(f.FileName))
@@ -249,15 +252,21 @@ void CComicPreviewHandler::LoadArchiveData()
             std::sort(m_imageNames.begin(), m_imageNames.end());
             m_totalPages = (int)m_imageNames.size();
 
-            std::wstring xmlContent = rar.ExtractComicInfoXML();
+            std::wstring xmlContent = rar->ExtractComicInfoXML();
             if (!xmlContent.empty())
                 m_hasComicInfo = m_parser.ParseFromXML(xmlContent);
 
-            rar.Close();
+            m_pRar = std::move(rar);
         }
     }
 
     LoadPage(0);
+}
+
+void CComicPreviewHandler::CloseArchive()
+{
+    m_pZip.reset();
+    m_pRar.reset();
 }
 
 bool CComicPreviewHandler::LoadPage(int pageIndex)
@@ -267,19 +276,13 @@ bool CComicPreviewHandler::LoadPage(int pageIndex)
 
     m_coverData.clear();
 
-    if (IsCBZFile())
+    if (m_pZip && m_pZip->IsOpen())
     {
-        ZipArchive zip;
-        if (!zip.Open(m_filePath)) return false;
-        m_coverData = zip.ExtractFile(m_imageNames[pageIndex]);
-        zip.Close();
+        m_coverData = m_pZip->ExtractFile(m_imageNames[pageIndex]);
     }
-    else if (IsCBRFile())
+    else if (m_pRar && m_pRar->IsOpen())
     {
-        RarArchive rar;
-        if (!rar.Open(m_filePath)) return false;
-        m_coverData = rar.ExtractFile(m_imageNames[pageIndex]);
-        rar.Close();
+        m_coverData = m_pRar->ExtractFile(m_imageNames[pageIndex]);
     }
     else
     {
@@ -552,7 +555,7 @@ void CComicPreviewHandler::DrawNavigationControls(Graphics& g, const RectF& imag
     // Semi-transparent button backgrounds
     SolidBrush btnBg(Color(160, 0, 0, 0));
     SolidBrush arrowBrush(Color(255, 255, 255, 255));
-    Font arrowFont(L"Wingdings 3", 14, FontStyleBold, UnitPixel);
+    Font arrowFont(L"Segoe UI Symbol", 14, FontStyleBold, UnitPixel);
     StringFormat sf;
     sf.SetAlignment(StringAlignmentCenter);
     sf.SetLineAlignment(StringAlignmentCenter);
