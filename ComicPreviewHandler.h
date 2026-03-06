@@ -5,6 +5,11 @@
 #include "ComicInfo.h"
 
 #include <ShObjIdl.h>   // IPreviewHandler, IInitializeWithFile
+#include <memory>       // std::unique_ptr
+
+// Forward declarations: full definitions in ComicPreviewHandler.cpp
+class ZipArchive;
+class RarArchive;
 
 // {B5E84A2F-3D71-4C8A-9F20-1A2B3C4D5E6F}
 EXTERN_C const CLSID CLSID_ComicPreviewHandler;
@@ -69,16 +74,32 @@ private:
     std::vector<BYTE>   m_coverData;
     std::vector<std::wstring> m_imageNames;   // all image file names in archive
     int                 m_totalPages;
+    int                 m_currentPage;
+
+    // Open archive handles (kept alive for the preview lifetime to avoid re-opening on each page)
+    std::unique_ptr<ZipArchive> m_pZip;
+    std::unique_ptr<RarArchive> m_pRar;
+
+    // Navigation button regions (populated during drawing, used for hit testing)
+    RECT                m_prevButtonRect;
+    RECT                m_nextButtonRect;
 
     // GDI+ token
     ULONG_PTR           m_gdiplusToken;
 
     // Methods
     void LoadArchiveData();
+    bool LoadPage(int pageIndex);
+    void CloseArchive();
+    void NavigateToPage(int pageIndex);
+    void NavigatePrevious();
+    void NavigateNext();
     void CreatePreviewWindow();
     void DestroyPreviewWindow();
     void PaintContent(HDC hdc, const RECT& rc);
-    void DrawCoverImage(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
+    void DrawCurrentPage(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
+    void DrawNavigationControls(Gdiplus::Graphics& g, const Gdiplus::RectF& imageArea);
+    void DrawPageIndicator(Gdiplus::Graphics& g, const Gdiplus::RectF& imageArea);
     void DrawMetadata(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
     void DrawPageStrip(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
 

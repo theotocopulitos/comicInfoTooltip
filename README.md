@@ -10,11 +10,20 @@ A Windows shell extension that adds rich **tooltips** and a **preview pane** for
 
 - Windows 10/11 (x64)
 - The pre-built DLL (`x64\Release\ComicTooltipExt.dll`), or Visual Studio 2022 with C++ ATL to build from source.
+- Administrator permissions to copy the DLL into `C:\Windows\System32` and register the shell extensions.
+
+### Build
+
+1. Open `ComicTooltipExt.vcxproj` in Visual Studio 2022.
+2. Build the project in **Release | x64**.
+3. The output DLL will be generated at `x64\Release\ComicTooltipExt.dll`.
 
 ### Installation
 
-1. **Build** the project (Release, x64) or use the pre-built DLL.
-2. **Copy the DLL** to a permanent location (e.g. `C:\Windows\System32`).
+1. **Build** the project in `Release x64` or use the existing DLL from `x64\Release`.
+2. **Deploy the DLL**:
+   - For development, run `deploy.bat` as administrator. It stops `prevhost.exe`, `dllhost.exe`, and `explorer.exe`, copies the DLL to `C:\Windows\System32`, then restarts Explorer.
+   - If you prefer, you can also copy the DLL manually to `C:\Windows\System32` using an elevated prompt.
 3. **Register** by right-clicking one of the batch files below and selecting **"Run as administrator"**:
 
 | Script | What it does |
@@ -25,7 +34,7 @@ A Windows shell extension that adds rich **tooltips** and a **preview pane** for
 
 > **Important:** All registration scripts must run in an **elevated prompt** (Run as administrator). They will refuse to run otherwise.
 
-4. **Restart Explorer** or log out/in for changes to take effect.
+4. If you did not use `deploy.bat`, **restart Explorer** or log out/in for changes to take effect.
 
 ### Uninstallation
 
@@ -40,7 +49,8 @@ Right-click the corresponding script as administrator:
 ### Usage
 
 - **Tooltip:** Hover over any `.cbz` or `.cbr` file in Explorer to see metadata (title, series, publisher, creative team, summary, etc.).
-- **Preview Pane:** Press `Alt+P` in Explorer to open the preview pane, then click a comic file. The cover image and full metadata are displayed side by side.
+- **Preview Pane:** Press `Alt+P` in Explorer to open the preview pane, then click a comic file. The current page/cover is shown on the left and metadata on the right.
+- **Page navigation:** In the preview pane you can move between pages with the navigation controls or keyboard shortcuts when available.
 
 ### Troubleshooting
 
@@ -48,8 +58,9 @@ Right-click the corresponding script as administrator:
 |---|---|
 | Tooltip doesn't appear | Restart Explorer. Verify with `reg query "HKCR\.cbz\shellex\{00021500-0000-0000-C000-000000000046}"` |
 | Preview shows "No preview available" | Run `register_preview.bat` as admin. Check that `AppID` and `DisableLowILProcessIsolation` are set (the script does this). |
-| DLL can't be replaced / file locked | Close Explorer and kill `prevhost.exe` and `dllhost.exe` before copying. Use `deploy.bat` for development. |
+| DLL can't be replaced / file locked | Close Explorer and kill `prevhost.exe` and `dllhost.exe` before copying. `deploy.bat` automates this for development installs. |
 | Preview shows only the cover (from CDisplay/ComicRack) | The preview handler must also be registered under the ProgID. `register_preview.bat` handles this. |
+| Build fails with `LNK1104` on `ComicTooltipExt.dll` | The output DLL is still loaded by Explorer or Preview Host. Run `deploy.bat` or close `explorer.exe`, `prevhost.exe`, and `dllhost.exe` before rebuilding. |
 
 ---
 
@@ -58,8 +69,8 @@ Right-click the corresponding script as administrator:
 ### Features
 
 - **Tooltip handler** (`IQueryInfo`): Plain-text tooltip with all ComicInfo.xml v2.1 fields, formatted with Unicode separators and sections.
-- **Preview handler** (`IPreviewHandler`): GDI+ rendered panel with cover image (left) and metadata (right) in a light theme. Supports resizing.
-- **Archive support**: Custom ZIP and RAR parsers (no external libraries). ZIP supports both store (method 0) and deflate (method 8) via the Windows Compression API.
+- **Preview handler** (`IPreviewHandler`): GDI+ rendered panel with image/page area (left) and metadata (right) in a light theme. Supports resizing and page navigation.
+- **Archive support**: Custom ZIP and RAR parsers (no external libraries). ZIP supports store entries and the current code includes a best-effort path for deflate-compressed entries. RAR support is limited to the subset currently handled by the internal parser.
 - **Metadata**: Full ComicInfo.xml v2.1 schema support including series, publication, creative team, story arcs, characters, ratings, and more.
 
 ### Architecture
