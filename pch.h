@@ -13,6 +13,7 @@
 #define _ATL_CSTRING_EXPLICIT_CONSTRUCTORS
 
 #include <windows.h>
+#include <windowsx.h>
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <objbase.h>

@@ -69,16 +69,27 @@ private:
     std::vector<BYTE>   m_coverData;
     std::vector<std::wstring> m_imageNames;   // all image file names in archive
     int                 m_totalPages;
+    int                 m_currentPage;
+
+    // Navigation button regions (populated during drawing, used for hit testing)
+    RECT                m_prevButtonRect;
+    RECT                m_nextButtonRect;
 
     // GDI+ token
     ULONG_PTR           m_gdiplusToken;
 
     // Methods
     void LoadArchiveData();
+    bool LoadPage(int pageIndex);
+    void NavigateToPage(int pageIndex);
+    void NavigatePrevious();
+    void NavigateNext();
     void CreatePreviewWindow();
     void DestroyPreviewWindow();
     void PaintContent(HDC hdc, const RECT& rc);
-    void DrawCoverImage(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
+    void DrawCurrentPage(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
+    void DrawNavigationControls(Gdiplus::Graphics& g, const Gdiplus::RectF& imageArea);
+    void DrawPageIndicator(Gdiplus::Graphics& g, const Gdiplus::RectF& imageArea);
     void DrawMetadata(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
     void DrawPageStrip(Gdiplus::Graphics& g, const Gdiplus::RectF& area);
 
