@@ -53,7 +53,12 @@ static IStream* CreateStreamFromBytes(const std::vector<BYTE>& data)
 
 // -----------------------------------------------------------------------
 // Construction / Destruction
-// -----------------------------------------------------------------------
+/**
+ * @brief Initialize a CComicPreviewHandler instance and prepare GDI+ for rendering.
+ *
+ * Initializes internal state (window handles, preview flags, comic info flag, page counters,
+ * and navigation hit rectangles) to safe defaults and starts the GDI+ subsystem used for image rendering.
+ */
 
 CComicPreviewHandler::CComicPreviewHandler()
     : m_hwndParent(nullptr)
@@ -61,9 +66,12 @@ CComicPreviewHandler::CComicPreviewHandler()
     , m_bPreviewing(false)
     , m_hasComicInfo(false)
     , m_totalPages(0)
+    , m_currentPage(0)
     , m_gdiplusToken(0)
 {
     memset(&m_rc, 0, sizeof(m_rc));
+    memset(&m_prevButtonRect, 0, sizeof(m_prevButtonRect));
+    memset(&m_nextButtonRect, 0, sizeof(m_nextButtonRect));
 
     GdiplusStartupInput si;
     GdiplusStartup(&m_gdiplusToken, &si, nullptr);
@@ -126,6 +134,15 @@ STDMETHODIMP CComicPreviewHandler::DoPreview()
     return S_OK;
 }
 
+/**
+ * @brief Shuts down the preview and clears all loaded comic state.
+ *
+ * Destroys the preview window (if any), clears loaded cover and image lists,
+ * resets parsed metadata presence, page counters, current page index, and the
+ * previewing flag.
+ *
+ * @return HRESULT S_OK on success.
+ */
 STDMETHODIMP CComicPreviewHandler::Unload()
 {
     DestroyPreviewWindow();
@@ -133,6 +150,7 @@ STDMETHODIMP CComicPreviewHandler::Unload()
     m_imageNames.clear();
     m_hasComicInfo = false;
     m_totalPages = 0;
+    m_currentPage = 0;
     m_bPreviewing = false;
     return S_OK;
 }
@@ -202,12 +220,20 @@ bool CComicPreviewHandler::IsCBRFile() const
     return ext.size() >= 4 && ext.substr(ext.size() - 4) == L".cbr";
 }
 
+/**
+ * @brief Loads image file list and optional ComicInfo metadata from the current archive.
+ *
+ * Populates internal state for previewing by clearing prior data, detecting archive type,
+ * enumerating image entries, sorting them, setting the total page count, and parsing ComicInfo XML
+ * when present. Resets the current page to the first page and attempts to preload it.
+ */
 void CComicPreviewHandler::LoadArchiveData()
 {
     m_imageNames.clear();
     m_coverData.clear();
     m_hasComicInfo = false;
     m_totalPages = 0;
+    m_currentPage = 0;
 
     if (IsCBZFile())
     {
@@ -222,10 +248,6 @@ void CComicPreviewHandler::LoadArchiveData()
             }
             std::sort(m_imageNames.begin(), m_imageNames.end());
             m_totalPages = (int)m_imageNames.size();
-
-            std::wstring coverName = zip.FindFirstImageFile();
-            if (!coverName.empty())
-                m_coverData = zip.ExtractFile(coverName);
 
             std::wstring xmlContent = zip.ExtractComicInfoXML();
             if (!xmlContent.empty())
@@ -248,10 +270,6 @@ void CComicPreviewHandler::LoadArchiveData()
             std::sort(m_imageNames.begin(), m_imageNames.end());
             m_totalPages = (int)m_imageNames.size();
 
-            std::wstring coverName = rar.FindFirstImageFile();
-            if (!coverName.empty())
-                m_coverData = rar.ExtractFile(coverName);
-
             std::wstring xmlContent = rar.ExtractComicInfoXML();
             if (!xmlContent.empty())
                 m_hasComicInfo = m_parser.ParseFromXML(xmlContent);
@@ -259,11 +277,64 @@ void CComicPreviewHandler::LoadArchiveData()
             rar.Close();
         }
     }
+
+    LoadPage(0);
+}
+
+/**
+ * @brief Loads the image data for a specific page from the currently opened comic archive.
+ *
+ * Attempts to extract the image at the given zero-based page index from the CBZ/CBR archive
+ * referenced by the handler and stores the raw bytes into the handler's internal cover buffer.
+ *
+ * @param pageIndex Zero-based index of the page to load.
+ * @return true if the page image data was successfully extracted and stored; false if the index
+ *         is out of range, the archive type is unsupported, the archive could not be opened,
+ *         or extraction produced no data.
+ */
+bool CComicPreviewHandler::LoadPage(int pageIndex)
+{
+    if (pageIndex < 0 || pageIndex >= (int)m_imageNames.size())
+        return false;
+
+    m_coverData.clear();
+
+    if (IsCBZFile())
+    {
+        ZipArchive zip;
+        if (!zip.Open(m_filePath)) return false;
+        m_coverData = zip.ExtractFile(m_imageNames[pageIndex]);
+        zip.Close();
+    }
+    else if (IsCBRFile())
+    {
+        RarArchive rar;
+        if (!rar.Open(m_filePath)) return false;
+        m_coverData = rar.ExtractFile(m_imageNames[pageIndex]);
+        rar.Close();
+    }
+    else
+    {
+        return false;
+    }
+
+    if (m_hwndPreview)
+        InvalidateRect(m_hwndPreview, nullptr, TRUE);
+
+    return !m_coverData.empty();
 }
 
 // -----------------------------------------------------------------------
 // Window management
-// -----------------------------------------------------------------------
+/**
+ * @brief Creates the preview child window used to render the comic preview.
+ *
+ * If the handler has no parent window, this is a no-op. If the preview window
+ * class has not yet been registered, the function registers it and marks it
+ * as registered. The function then creates a visible child window positioned
+ * and sized from the handler's stored rectangle and stores the created window
+ * handle in the instance for subsequent painting and input handling.
+ */
 
 void CComicPreviewHandler::CreatePreviewWindow()
 {
@@ -285,12 +356,18 @@ void CComicPreviewHandler::CreatePreviewWindow()
 
     m_hwndPreview = CreateWindowEx(
         0, kWndClassName, L"Comic Preview",
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_TABSTOP,
         m_rc.left, m_rc.top,
         m_rc.right - m_rc.left, m_rc.bottom - m_rc.top,
         m_hwndParent, nullptr, hInst, this);
 }
 
+/**
+ * @brief Destroys the preview child window and clears the stored window handle.
+ *
+ * If a preview window exists, it is destroyed and the internal preview window
+ * handle is set to null.
+ */
 void CComicPreviewHandler::DestroyPreviewWindow()
 {
     if (m_hwndPreview)
@@ -300,6 +377,55 @@ void CComicPreviewHandler::DestroyPreviewWindow()
     }
 }
 
+// -----------------------------------------------------------------------
+// Navigation
+/**
+ * @brief Navigate the preview to a specific page and display it.
+ *
+ * Updates the preview's current page to the given zero-based index and loads that page's image for display. If the index is outside the valid range (less than 0 or greater than or equal to the total page count), the call has no effect.
+ *
+ * @param pageIndex Zero-based index of the page to navigate to.
+ */
+
+void CComicPreviewHandler::NavigateToPage(int pageIndex)
+{
+    if (pageIndex < 0 || pageIndex >= m_totalPages) return;
+    m_currentPage = pageIndex;
+    LoadPage(m_currentPage);
+}
+
+/**
+ * @brief Advance the preview to the previous page.
+ *
+ * Advances the current page shown in the preview to the previous page; when the current
+ * page is the first page, wraps around to the last page.
+ */
+void CComicPreviewHandler::NavigatePrevious()
+{
+    NavigateToPage(m_currentPage - 1);
+}
+
+/**
+ * @brief Advance the preview to the next page, wrapping to the first page when at the end.
+ *
+ * Updates the current page and loads the corresponding page data for display.
+ */
+void CComicPreviewHandler::NavigateNext()
+{
+    NavigateToPage(m_currentPage + 1);
+}
+
+/**
+ * @brief Window procedure that dispatches painting and input for the preview window and routes messages to the associated CComicPreviewHandler instance.
+ *
+ * Associates the CComicPreviewHandler pointer with the window on WM_CREATE, handles WM_PAINT by invoking PaintContent, suppresses default background erasure, and processes keyboard (arrow/Home/End) and left-button mouse clicks for page navigation when appropriate.
+ *
+ * @param hwnd Handle to the window.
+ * @param msg Window message identifier.
+ * @param wp Message-specific wParam.
+ * @param lp Message-specific lParam.
+ * @return LRESULT `0` when the message was handled by this procedure, `1` for WM_ERASEBKGND to indicate no further background erasing is required, or the value returned by DefWindowProc for unhandled messages. 
+ */
 LRESULT CALLBACK CComicPreviewHandler::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     CComicPreviewHandler* pThis = nullptr;
@@ -330,6 +456,51 @@ LRESULT CALLBACK CComicPreviewHandler::WndProc(HWND hwnd, UINT msg, WPARAM wp, L
     }
     case WM_ERASEBKGND:
         return 1;   // we paint everything
+    case WM_KEYDOWN:
+    {
+        if (!pThis) break;
+        switch (wp)
+        {
+        case VK_LEFT:
+        case VK_UP:
+            pThis->NavigatePrevious();
+            return 0;
+        case VK_RIGHT:
+        case VK_DOWN:
+            pThis->NavigateNext();
+            return 0;
+        case VK_HOME:
+            pThis->NavigateToPage(0);
+            return 0;
+        case VK_END:
+            pThis->NavigateToPage(pThis->m_totalPages - 1);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN:
+    {
+        if (!pThis) break;
+        ::SetFocus(hwnd);
+
+        if (pThis->m_totalPages > 1)
+        {
+            int xClick = GET_X_LPARAM(lp);
+            int yClick = GET_Y_LPARAM(lp);
+            POINT pt = { xClick, yClick };
+            if (PtInRect(&pThis->m_prevButtonRect, pt))
+            {
+                pThis->NavigatePrevious();
+                return 0;
+            }
+            if (PtInRect(&pThis->m_nextButtonRect, pt))
+            {
+                pThis->NavigateNext();
+                return 0;
+            }
+        }
+        return 0;
+    }
     }
 
     return DefWindowProc(hwnd, msg, wp, lp);
@@ -347,7 +518,14 @@ static const Color kTextSecondary(255, 60, 60, 70);      // medium text
 static const Color kTextLabel(255, 120, 120, 130);       // dim label
 static const Color kSeparator(255, 210, 210, 215);       // light separator
 static const Color kStarFilled(255, 230, 170, 20);       // gold star
-static const Color kStarEmpty(255, 200, 200, 205);       // light star
+static const Color kStarEmpty(255, 200, 200, 205);       /**
+ * @brief Renders the preview content (cover, navigation, page indicator, and metadata) into the given device context.
+ *
+ * Renders the preview UI for the currently loaded page and metadata into the provided HDC constrained by rc. Drawing is composed into an off-screen bitmap sized to rc and then transferred to the target HDC to produce a pixel-accurate preview.
+ *
+ * @param hdc Target device context where the composed preview will be drawn.
+ * @param rc Target rectangle, in device pixels, that bounds the preview area within hdc.
+ */
 
 void CComicPreviewHandler::PaintContent(HDC hdc, const RECT& rc)
 {
@@ -380,7 +558,9 @@ void CComicPreviewHandler::PaintContent(HDC hdc, const RECT& rc)
     if (metaW < 100) metaW = 100;
     RectF metaArea(metaX, margin, metaW, (float)h - margin * 2);
 
-    DrawCoverImage(g, coverArea);
+    DrawCurrentPage(g, coverArea);
+    DrawNavigationControls(g, coverArea);
+    DrawPageIndicator(g, coverArea);
     DrawMetadata(g, metaArea);
 
     // Blit the bitmap to the target DC
@@ -389,7 +569,18 @@ void CComicPreviewHandler::PaintContent(HDC hdc, const RECT& rc)
     gDst.DrawImage(&bmp, rc.left, rc.top, w, h);
 }
 
-void CComicPreviewHandler::DrawCoverImage(Graphics& g, const RectF& area)
+/**
+ * @brief Renders the current page image (or a placeholder) into the given area.
+ *
+ * Draws the loaded cover image scaled to fit the provided rectangle while preserving
+ * aspect ratio and aligning to the top. If no image data is available, renders a
+ * centered "No cover image" placeholder. The drawn image includes a subtle shadow
+ * and a thin border.
+ *
+ * @param g GDI+ Graphics context used for drawing.
+ * @param area Destination rectangle in which the page or placeholder should be rendered.
+ */
+void CComicPreviewHandler::DrawCurrentPage(Graphics& g, const RectF& area)
 {
     if (m_coverData.empty())
     {
@@ -438,7 +629,137 @@ void CComicPreviewHandler::DrawCoverImage(Graphics& g, const RectF& area)
     g.DrawRectangle(&borderPen, drawX, drawY, drawW, drawH);
 }
 
-// Helper: draw a label:value pair, returns Y advance
+/**
+ * @brief Renders previous/next page navigation buttons over the current page image.
+ *
+ * Draws semi-transparent left and right navigation buttons with centered arrow glyphs when
+ * more than one page is available. Button visibility is determined from the current page
+ * index and total page count; when shown, the function updates m_prevButtonRect and
+ * m_nextButtonRect for mouse hit testing. No drawing occurs if there is only a single page.
+ *
+ * @param imageArea Bounding rectangle of the image area where navigation controls are placed.
+ */
+void CComicPreviewHandler::DrawNavigationControls(Graphics& g, const RectF& imageArea)
+{
+    if (m_totalPages <= 1) return;
+
+    // Button dimensions
+    const float btnW = 28.0f;
+    const float btnH = 48.0f;
+    const float btnY = imageArea.Y + (imageArea.Height - btnH) / 2.0f;
+
+    const float prevX = imageArea.X;
+    const float nextX = imageArea.X + imageArea.Width - btnW;
+
+    // Semi-transparent button backgrounds
+    SolidBrush btnBg(Color(160, 0, 0, 0));
+    SolidBrush arrowBrush(Color(255, 255, 255, 255));
+    Font arrowFont(L"Wingdings 3", 14, FontStyleBold, UnitPixel);
+    StringFormat sf;
+    sf.SetAlignment(StringAlignmentCenter);
+    sf.SetLineAlignment(StringAlignmentCenter);
+
+    // Previous button
+    if (m_currentPage > 0)
+    {
+        RectF prevRect(prevX, btnY, btnW, btnH);
+        g.FillRectangle(&btnBg, prevRect);
+        g.DrawString(L"\u25C0", -1, &arrowFont, prevRect, &sf, &arrowBrush);
+
+        // Store button region for hit testing
+        m_prevButtonRect.left   = (LONG)(imageArea.X);
+        m_prevButtonRect.top    = (LONG)btnY;
+        m_prevButtonRect.right  = (LONG)(imageArea.X + btnW);
+        m_prevButtonRect.bottom = (LONG)(btnY + btnH);
+    }
+    else
+    {
+        memset(&m_prevButtonRect, 0, sizeof(m_prevButtonRect));
+    }
+
+    // Next button
+    if (m_currentPage < m_totalPages - 1)
+    {
+        RectF nextRect(nextX, btnY, btnW, btnH);
+        g.FillRectangle(&btnBg, nextRect);
+        g.DrawString(L"\u25B6", -1, &arrowFont, nextRect, &sf, &arrowBrush);
+
+        // Store button region for hit testing
+        m_nextButtonRect.left   = (LONG)nextX;
+        m_nextButtonRect.top    = (LONG)btnY;
+        m_nextButtonRect.right  = (LONG)(nextX + btnW);
+        m_nextButtonRect.bottom = (LONG)(btnY + btnH);
+    }
+    else
+    {
+        memset(&m_nextButtonRect, 0, sizeof(m_nextButtonRect));
+    }
+}
+
+/**
+ * @brief Draws a centered page indicator badge over the current page image.
+ *
+ * Renders a semi-transparent rounded badge (background and white text) near the
+ * bottom-center of the provided image area containing the text "current / total"
+ * based on `m_currentPage` and `m_totalPages`. If `m_totalPages` is less than or
+ * equal to zero, the function does nothing.
+ *
+ * @param imageArea Rectangle representing the area where the current page image
+ *                  is drawn; the badge is positioned relative to this area.
+ */
+void CComicPreviewHandler::DrawPageIndicator(Graphics& g, const RectF& imageArea)
+{
+    if (m_totalPages <= 0) return;
+
+    FontFamily ff(L"Segoe UI");
+    Font indicatorFont(&ff, 12, FontStyleRegular, UnitPixel);
+
+    wchar_t buf[32];
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"%d / %d", m_currentPage + 1, m_totalPages);
+
+    // Measure text
+    StringFormat sf;
+    sf.SetAlignment(StringAlignmentCenter);
+    RectF measureRect(0, 0, 200, 30);
+    RectF measured;
+    g.MeasureString(buf, -1, &indicatorFont, measureRect, &sf, &measured);
+
+    float padX = 8.0f;
+    float padY = 3.0f;
+    float bgW = measured.Width + padX * 2;
+    float bgH = measured.Height + padY * 2;
+    float bgX = imageArea.X + (imageArea.Width - bgW) / 2.0f;
+    float bgY = imageArea.Y + imageArea.Height - bgH - 6.0f;
+
+    // Semi-transparent background
+    SolidBrush bgBrush(Color(160, 0, 0, 0));
+    g.FillRectangle(&bgBrush, bgX, bgY, bgW, bgH);
+
+    // Text
+    SolidBrush textBrush(Color(255, 255, 255, 255));
+    RectF textRect(bgX, bgY, bgW, bgH);
+    StringFormat centerSf;
+    centerSf.SetAlignment(StringAlignmentCenter);
+    centerSf.SetLineAlignment(StringAlignmentCenter);
+    g.DrawString(buf, -1, &indicatorFont, textRect, &centerSf, &textBrush);
+}
+
+/**
+ * Draws a label–value pair at the given position and returns the vertical advance.
+ *
+ * Draws `label` using `labelFont` and `value` using `valueFont` with ellipsis trimming when the text exceeds `maxWidth`.
+ * If `value` is empty, nothing is drawn and zero is returned.
+ *
+ * @param g Graphics context used for drawing.
+ * @param labelFont Font used to render the label text.
+ * @param valueFont Font used to render the value text.
+ * @param x Left coordinate (pixels) of the field's bounding area.
+ * @param y Top coordinate (pixels) where the field is drawn.
+ * @param maxWidth Maximum width (pixels) available for the combined label and value.
+ * @param label Null-terminated wide string for the field label (e.g., "Publisher:").
+ * @param value Value text to render; if empty, the field is skipped.
+ * @return float Vertical advancement in pixels after drawing the field (22.0f when drawn, 0.0f when skipped).
+ */
 static float DrawField(Graphics& g, const Font* labelFont, const Font* valueFont,
                        float x, float y, float maxWidth,
                        const wchar_t* label, const std::wstring& value)
