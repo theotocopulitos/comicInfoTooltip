@@ -23,14 +23,17 @@ static bool s_wndClassRegistered = false;
 
 static bool IsImageFile(const std::wstring& name)
 {
+    static const wchar_t* kExts[] = { L".jpg", L".jpeg", L".png", L".gif", L".bmp", L".webp", nullptr };
     auto lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
-    return lower.find(L".jpg")  != std::wstring::npos
-        || lower.find(L".jpeg") != std::wstring::npos
-        || lower.find(L".png")  != std::wstring::npos
-        || lower.find(L".gif")  != std::wstring::npos
-        || lower.find(L".bmp")  != std::wstring::npos
-        || lower.find(L".webp") != std::wstring::npos;
+    for (int i = 0; kExts[i]; ++i)
+    {
+        size_t elen = wcslen(kExts[i]);
+        if (lower.size() >= elen &&
+            lower.compare(lower.size() - elen, elen, kExts[i]) == 0)
+            return true;
+    }
+    return false;
 }
 
 static IStream* CreateStreamFromBytes(const std::vector<BYTE>& data)
@@ -260,7 +263,16 @@ void CComicPreviewHandler::LoadArchiveData()
         }
     }
 
-    LoadPage(0);
+    // Load the first page; if it fails (e.g. the entry is corrupt), try subsequent
+    // pages so the preview still shows something rather than a blank placeholder.
+    for (int i = 0; i < m_totalPages; ++i)
+    {
+        if (LoadPage(i))
+        {
+            m_currentPage = i;
+            break;
+        }
+    }
 }
 
 void CComicPreviewHandler::CloseArchive()
