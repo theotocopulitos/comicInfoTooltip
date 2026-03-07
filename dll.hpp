@@ -4,9 +4,9 @@
 // Structures must be packed to 1-byte boundaries for binary compatibility
 // with unrar.dll.
 
-`#pragma` once
+#pragma once
 
-`#include` <windows.h>
+#include <windows.h>
 // -----------------------------------------------------------------------
 // Error codes returned by RAROpenArchiveEx / RARReadHeaderEx / RARProcessFileW
 // -----------------------------------------------------------------------
