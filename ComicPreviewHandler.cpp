@@ -23,14 +23,17 @@ static bool s_wndClassRegistered = false;
 
 static bool IsImageFile(const std::wstring& name)
 {
+    static const wchar_t* kExts[] = { L".jpg", L".jpeg", L".png", L".gif", L".bmp", L".webp", nullptr };
     auto lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
-    return lower.find(L".jpg")  != std::wstring::npos
-        || lower.find(L".jpeg") != std::wstring::npos
-        || lower.find(L".png")  != std::wstring::npos
-        || lower.find(L".gif")  != std::wstring::npos
-        || lower.find(L".bmp")  != std::wstring::npos
-        || lower.find(L".webp") != std::wstring::npos;
+    for (int i = 0; kExts[i]; ++i)
+    {
+        size_t elen = wcslen(kExts[i]);
+        if (lower.size() >= elen &&
+            lower.compare(lower.size() - elen, elen, kExts[i]) == 0)
+            return true;
+    }
+    return false;
 }
 
 static IStream* CreateStreamFromBytes(const std::vector<BYTE>& data)
@@ -61,9 +64,12 @@ CComicPreviewHandler::CComicPreviewHandler()
     , m_bPreviewing(false)
     , m_hasComicInfo(false)
     , m_totalPages(0)
+    , m_currentPage(0)
     , m_gdiplusToken(0)
 {
     memset(&m_rc, 0, sizeof(m_rc));
+    memset(&m_prevButtonRect, 0, sizeof(m_prevButtonRect));
+    memset(&m_nextButtonRect, 0, sizeof(m_nextButtonRect));
 
     GdiplusStartupInput si;
     GdiplusStartup(&m_gdiplusToken, &si, nullptr);
@@ -72,6 +78,7 @@ CComicPreviewHandler::CComicPreviewHandler()
 CComicPreviewHandler::~CComicPreviewHandler()
 {
     DestroyPreviewWindow();
+    CloseArchive();
     if (m_gdiplusToken)
         GdiplusShutdown(m_gdiplusToken);
 }
@@ -129,10 +136,12 @@ STDMETHODIMP CComicPreviewHandler::DoPreview()
 STDMETHODIMP CComicPreviewHandler::Unload()
 {
     DestroyPreviewWindow();
+    CloseArchive();
     m_coverData.clear();
     m_imageNames.clear();
     m_hasComicInfo = false;
     m_totalPages = 0;
+    m_currentPage = 0;
     m_bPreviewing = false;
     return S_OK;
 }
@@ -204,17 +213,19 @@ bool CComicPreviewHandler::IsCBRFile() const
 
 void CComicPreviewHandler::LoadArchiveData()
 {
+    CloseArchive();
     m_imageNames.clear();
     m_coverData.clear();
     m_hasComicInfo = false;
     m_totalPages = 0;
+    m_currentPage = 0;
 
     if (IsCBZFile())
     {
-        ZipArchive zip;
-        if (zip.Open(m_filePath))
+        auto zip = std::make_unique<ZipArchive>();
+        if (zip->Open(m_filePath))
         {
-            auto files = zip.GetFileList();
+            auto files = zip->GetFileList();
             for (auto& f : files)
             {
                 if (!f.IsDirectory && IsImageFile(f.FileName))
@@ -223,23 +234,19 @@ void CComicPreviewHandler::LoadArchiveData()
             std::sort(m_imageNames.begin(), m_imageNames.end());
             m_totalPages = (int)m_imageNames.size();
 
-            std::wstring coverName = zip.FindFirstImageFile();
-            if (!coverName.empty())
-                m_coverData = zip.ExtractFile(coverName);
-
-            std::wstring xmlContent = zip.ExtractComicInfoXML();
+            std::wstring xmlContent = zip->ExtractComicInfoXML();
             if (!xmlContent.empty())
                 m_hasComicInfo = m_parser.ParseFromXML(xmlContent);
 
-            zip.Close();
+            m_pZip = std::move(zip);
         }
     }
     else if (IsCBRFile())
     {
-        RarArchive rar;
-        if (rar.Open(m_filePath))
+        auto rar = std::make_unique<RarArchive>();
+        if (rar->Open(m_filePath))
         {
-            auto files = rar.GetFileList();
+            auto files = rar->GetFileList();
             for (auto& f : files)
             {
                 if (!f.IsDirectory && IsImageFile(f.FileName))
@@ -248,17 +255,56 @@ void CComicPreviewHandler::LoadArchiveData()
             std::sort(m_imageNames.begin(), m_imageNames.end());
             m_totalPages = (int)m_imageNames.size();
 
-            std::wstring coverName = rar.FindFirstImageFile();
-            if (!coverName.empty())
-                m_coverData = rar.ExtractFile(coverName);
-
-            std::wstring xmlContent = rar.ExtractComicInfoXML();
+            std::wstring xmlContent = rar->ExtractComicInfoXML();
             if (!xmlContent.empty())
                 m_hasComicInfo = m_parser.ParseFromXML(xmlContent);
 
-            rar.Close();
+            m_pRar = std::move(rar);
         }
     }
+
+    // Load the first page; if it fails (e.g. the entry is corrupt), try subsequent
+    // pages so the preview still shows something rather than a blank placeholder.
+    for (int i = 0; i < m_totalPages; ++i)
+    {
+        if (LoadPage(i))
+        {
+            m_currentPage = i;
+            break;
+        }
+    }
+}
+
+void CComicPreviewHandler::CloseArchive()
+{
+    m_pZip.reset();
+    m_pRar.reset();
+}
+
+bool CComicPreviewHandler::LoadPage(int pageIndex)
+{
+    if (pageIndex < 0 || pageIndex >= (int)m_imageNames.size())
+        return false;
+
+    m_coverData.clear();
+
+    if (m_pZip && m_pZip->IsOpen())
+    {
+        m_coverData = m_pZip->ExtractFile(m_imageNames[pageIndex]);
+    }
+    else if (m_pRar && m_pRar->IsOpen())
+    {
+        m_coverData = m_pRar->ExtractFile(m_imageNames[pageIndex]);
+    }
+    else
+    {
+        return false;
+    }
+
+    if (m_hwndPreview)
+        InvalidateRect(m_hwndPreview, nullptr, TRUE);
+
+    return !m_coverData.empty();
 }
 
 // -----------------------------------------------------------------------
@@ -285,7 +331,7 @@ void CComicPreviewHandler::CreatePreviewWindow()
 
     m_hwndPreview = CreateWindowEx(
         0, kWndClassName, L"Comic Preview",
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_TABSTOP,
         m_rc.left, m_rc.top,
         m_rc.right - m_rc.left, m_rc.bottom - m_rc.top,
         m_hwndParent, nullptr, hInst, this);
@@ -298,6 +344,27 @@ void CComicPreviewHandler::DestroyPreviewWindow()
         DestroyWindow(m_hwndPreview);
         m_hwndPreview = nullptr;
     }
+}
+
+// -----------------------------------------------------------------------
+// Navigation
+// -----------------------------------------------------------------------
+
+void CComicPreviewHandler::NavigateToPage(int pageIndex)
+{
+    if (pageIndex < 0 || pageIndex >= m_totalPages) return;
+    LoadPage(pageIndex);
+    m_currentPage = pageIndex;
+}
+
+void CComicPreviewHandler::NavigatePrevious()
+{
+    NavigateToPage(m_currentPage - 1);
+}
+
+void CComicPreviewHandler::NavigateNext()
+{
+    NavigateToPage(m_currentPage + 1);
 }
 
 LRESULT CALLBACK CComicPreviewHandler::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -330,6 +397,51 @@ LRESULT CALLBACK CComicPreviewHandler::WndProc(HWND hwnd, UINT msg, WPARAM wp, L
     }
     case WM_ERASEBKGND:
         return 1;   // we paint everything
+    case WM_KEYDOWN:
+    {
+        if (!pThis) break;
+        switch (wp)
+        {
+        case VK_LEFT:
+        case VK_UP:
+            pThis->NavigatePrevious();
+            return 0;
+        case VK_RIGHT:
+        case VK_DOWN:
+            pThis->NavigateNext();
+            return 0;
+        case VK_HOME:
+            pThis->NavigateToPage(0);
+            return 0;
+        case VK_END:
+            pThis->NavigateToPage(pThis->m_totalPages - 1);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN:
+    {
+        if (!pThis) break;
+        ::SetFocus(hwnd);
+
+        if (pThis->m_totalPages > 1)
+        {
+            int xClick = GET_X_LPARAM(lp);
+            int yClick = GET_Y_LPARAM(lp);
+            POINT pt = { xClick, yClick };
+            if (PtInRect(&pThis->m_prevButtonRect, pt))
+            {
+                pThis->NavigatePrevious();
+                return 0;
+            }
+            if (PtInRect(&pThis->m_nextButtonRect, pt))
+            {
+                pThis->NavigateNext();
+                return 0;
+            }
+        }
+        return 0;
+    }
     }
 
     return DefWindowProc(hwnd, msg, wp, lp);
@@ -380,7 +492,9 @@ void CComicPreviewHandler::PaintContent(HDC hdc, const RECT& rc)
     if (metaW < 100) metaW = 100;
     RectF metaArea(metaX, margin, metaW, (float)h - margin * 2);
 
-    DrawCoverImage(g, coverArea);
+    DrawCurrentPage(g, coverArea);
+    DrawNavigationControls(g, coverArea);
+    DrawPageIndicator(g, coverArea);
     DrawMetadata(g, metaArea);
 
     // Blit the bitmap to the target DC
@@ -389,7 +503,7 @@ void CComicPreviewHandler::PaintContent(HDC hdc, const RECT& rc)
     gDst.DrawImage(&bmp, rc.left, rc.top, w, h);
 }
 
-void CComicPreviewHandler::DrawCoverImage(Graphics& g, const RectF& area)
+void CComicPreviewHandler::DrawCurrentPage(Graphics& g, const RectF& area)
 {
     if (m_coverData.empty())
     {
@@ -436,6 +550,100 @@ void CComicPreviewHandler::DrawCoverImage(Graphics& g, const RectF& area)
     // Thin border
     Pen borderPen(Color(60, 0, 0, 0), 1.0f);
     g.DrawRectangle(&borderPen, drawX, drawY, drawW, drawH);
+}
+
+void CComicPreviewHandler::DrawNavigationControls(Graphics& g, const RectF& imageArea)
+{
+    if (m_totalPages <= 1) return;
+
+    // Button dimensions
+    const float btnW = 28.0f;
+    const float btnH = 48.0f;
+    const float btnY = imageArea.Y + (imageArea.Height - btnH) / 2.0f;
+
+    const float prevX = imageArea.X;
+    const float nextX = imageArea.X + imageArea.Width - btnW;
+
+    // Semi-transparent button backgrounds
+    SolidBrush btnBg(Color(160, 0, 0, 0));
+    SolidBrush arrowBrush(Color(255, 255, 255, 255));
+    Font arrowFont(L"Segoe UI Symbol", 14, FontStyleBold, UnitPixel);
+    StringFormat sf;
+    sf.SetAlignment(StringAlignmentCenter);
+    sf.SetLineAlignment(StringAlignmentCenter);
+
+    // Previous button
+    if (m_currentPage > 0)
+    {
+        RectF prevRect(prevX, btnY, btnW, btnH);
+        g.FillRectangle(&btnBg, prevRect);
+        g.DrawString(L"\u25C0", -1, &arrowFont, prevRect, &sf, &arrowBrush);
+
+        // Store button region for hit testing
+        m_prevButtonRect.left   = (LONG)(imageArea.X);
+        m_prevButtonRect.top    = (LONG)btnY;
+        m_prevButtonRect.right  = (LONG)(imageArea.X + btnW);
+        m_prevButtonRect.bottom = (LONG)(btnY + btnH);
+    }
+    else
+    {
+        memset(&m_prevButtonRect, 0, sizeof(m_prevButtonRect));
+    }
+
+    // Next button
+    if (m_currentPage < m_totalPages - 1)
+    {
+        RectF nextRect(nextX, btnY, btnW, btnH);
+        g.FillRectangle(&btnBg, nextRect);
+        g.DrawString(L"\u25B6", -1, &arrowFont, nextRect, &sf, &arrowBrush);
+
+        // Store button region for hit testing
+        m_nextButtonRect.left   = (LONG)nextX;
+        m_nextButtonRect.top    = (LONG)btnY;
+        m_nextButtonRect.right  = (LONG)(nextX + btnW);
+        m_nextButtonRect.bottom = (LONG)(btnY + btnH);
+    }
+    else
+    {
+        memset(&m_nextButtonRect, 0, sizeof(m_nextButtonRect));
+    }
+}
+
+void CComicPreviewHandler::DrawPageIndicator(Graphics& g, const RectF& imageArea)
+{
+    if (m_totalPages <= 0) return;
+
+    FontFamily ff(L"Segoe UI");
+    Font indicatorFont(&ff, 12, FontStyleRegular, UnitPixel);
+
+    wchar_t buf[32];
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"%d / %d", m_currentPage + 1, m_totalPages);
+
+    // Measure text
+    StringFormat sf;
+    sf.SetAlignment(StringAlignmentCenter);
+    RectF measureRect(0, 0, 200, 30);
+    RectF measured;
+    g.MeasureString(buf, -1, &indicatorFont, measureRect, &sf, &measured);
+
+    float padX = 8.0f;
+    float padY = 3.0f;
+    float bgW = measured.Width + padX * 2;
+    float bgH = measured.Height + padY * 2;
+    float bgX = imageArea.X + (imageArea.Width - bgW) / 2.0f;
+    float bgY = imageArea.Y + imageArea.Height - bgH - 6.0f;
+
+    // Semi-transparent background
+    SolidBrush bgBrush(Color(160, 0, 0, 0));
+    g.FillRectangle(&bgBrush, bgX, bgY, bgW, bgH);
+
+    // Text
+    SolidBrush textBrush(Color(255, 255, 255, 255));
+    RectF textRect(bgX, bgY, bgW, bgH);
+    StringFormat centerSf;
+    centerSf.SetAlignment(StringAlignmentCenter);
+    centerSf.SetLineAlignment(StringAlignmentCenter);
+    g.DrawString(buf, -1, &indicatorFont, textRect, &centerSf, &textBrush);
 }
 
 // Helper: draw a label:value pair, returns Y advance
