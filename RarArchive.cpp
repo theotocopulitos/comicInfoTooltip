@@ -357,15 +357,31 @@ bool RarArchive::ParseRarHeader()
     int ret;
     while ((ret = g_unrar.pfnReadHeaderEx(hArc, &hdr)) == ERAR_SUCCESS)
     {
+        // Combine the high and low dwords into a full 64-bit uncompressed size
+        // so the MAX_ENTRY_BYTES cap cannot be bypassed by a crafted archive
+        // header that sets UnpSizeHigh != 0 while keeping UnpSize small.
+        uint64_t unpSize64  = (static_cast<uint64_t>(hdr.UnpSizeHigh) << 32) | hdr.UnpSize;
+        uint64_t packSize64 = (static_cast<uint64_t>(hdr.PackSizeHigh) << 32) | hdr.PackSize;
+
+        // Skip entries whose true uncompressed size exceeds the safety cap;
+        // they will not appear in the file list and cannot be extracted.
+        if (unpSize64 > MAX_ENTRY_BYTES)
+        {
+            int skipRet = g_unrar.pfnProcessFileW(hArc, RAR_SKIP, NULL, NULL);
+            if (skipRet != ERAR_SUCCESS)
+                break;
+            continue;
+        }
+
         RarFileInfo fi   = {};
         fi.FileName      = HeaderFileName(hdr);
-        // RarFileInfo.FileSize is DWORD (32-bit); images in comic archives
-        // are never ≥ 4 GB so storing the lower 32 bits of UnpSize is safe.
-        fi.FileSize      = hdr.UnpSize;
-        fi.CompressedSize = hdr.PackSize;
-        fi.CRC32         = hdr.FileCRC;
-        fi.FileOffset    = 0;                 // not used with UnRAR SDK
-        fi.IsDirectory   = (hdr.FileAttr & 0x10) != 0;
+        // unpSize64 is guaranteed ≤ MAX_ENTRY_BYTES (≤ 64 MB) here, so
+        // storing the low 32 bits in the DWORD field is safe.
+        fi.FileSize       = static_cast<DWORD>(unpSize64);
+        fi.CompressedSize = static_cast<DWORD>(packSize64);
+        fi.CRC32          = hdr.FileCRC;
+        fi.FileOffset     = 0;               // not used with UnRAR SDK
+        fi.IsDirectory    = (hdr.FileAttr & 0x10) != 0;
 
         m_fileList.push_back(fi);
 
