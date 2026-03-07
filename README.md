@@ -56,6 +56,7 @@ Right-click the corresponding script as administrator:
 
 | Problem | Solution |
 |---|---|
+| CBR shows blank pages / no preview | Obtain `unrar.dll` (64-bit) from [rarlab.com/rar/UnRARDLL.exe](https://www.rarlab.com/rar/UnRARDLL.exe) and place it in the same directory as `ComicTooltipExt.dll` (e.g. `C:\Windows\System32`). Without this DLL, CBR support is gracefully disabled. |
 | Tooltip doesn't appear | Restart Explorer. Verify with `reg query "HKCR\.cbz\shellex\{00021500-0000-0000-C000-000000000046}"` |
 | Preview shows "No preview available" | Run `register_preview.bat` as admin. Check that `AppID` and `DisableLowILProcessIsolation` are set (the script does this). |
 | DLL can't be replaced / file locked | Close Explorer and kill `prevhost.exe` and `dllhost.exe` before copying. `deploy.bat` automates this for development installs. |
@@ -70,7 +71,7 @@ Right-click the corresponding script as administrator:
 
 - **Tooltip handler** (`IQueryInfo`): Plain-text tooltip with all ComicInfo.xml v2.1 fields, formatted with Unicode separators and sections.
 - **Preview handler** (`IPreviewHandler`): GDI+ rendered panel with image/page area (left) and metadata (right) in a light theme. Supports resizing and page navigation.
-- **Archive support**: Custom ZIP and RAR parsers (no external libraries). ZIP supports store entries and the current code includes a best-effort path for deflate-compressed entries. RAR support is limited to the subset currently handled by the internal parser.
+- **Archive support**: Custom ZIP parser for `.cbz` and UnRAR SDK (`unrar.dll`) for `.cbr`. ZIP supports store and deflate-compressed entries. RAR support covers both RAR4 and RAR5 formats via the RARLAB UnRAR DLL loaded dynamically at runtime. If `unrar.dll` is absent, CBR archives gracefully degrade to a filename/size tooltip.
 - **Metadata**: Full ComicInfo.xml v2.1 schema support including series, publication, creative team, story arcs, characters, ratings, and more.
 
 ### Architecture
@@ -131,7 +132,7 @@ If a ProgID is registered for `.cbz`/`.cbr` (e.g. `cYo.ComicRack`), the preview 
 - **Visual Studio 2022** with C++ ATL/MFC workload
 - **GDI+** (`gdiplus.lib`) — for preview handler rendering
 - **Windows Compression API** (`Cabinet.lib`, `compressapi.h`) — for ZIP deflate decompression
-- No external libraries (no zlib, no UnRAR SDK)
+- **UnRAR DLL** (runtime, not link-time) — place `unrar.dll` (64-bit) from [rarlab.com](https://www.rarlab.com/rar/UnRARDLL.exe) next to `ComicTooltipExt.dll` to enable CBR support
 
 ### Key Implementation Notes
 

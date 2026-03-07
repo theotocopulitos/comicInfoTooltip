@@ -1,19 +1,121 @@
 // RarArchive.cpp : CBR (RAR) file handling implementation
 //
-// RAR4 format parsing. RAR5 archives need a library like UnRAR.dll;
-// for those we fall back to returning an empty list so the tooltip
-// shows at least the filename/size fallback.
+// Uses the UnRAR DLL (unrar.dll) loaded dynamically at runtime to support
+// both RAR4 and RAR5 archives.  If unrar.dll is absent the archive returns
+// an empty file list, mirroring the previous fallback behaviour.
 
 #include "pch.h"
 #include "RarArchive.h"
+#include "dll.hpp"
 
-// RAR4 signature: 0x52 0x61 0x72 0x21 0x1A 0x07 0x00
-// RAR5 signature: 0x52 0x61 0x72 0x21 0x1A 0x07 0x01 0x00
-static const BYTE kRar4Sig[] = { 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 };
-static const BYTE kRar5Sig[] = { 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00 };
+// -----------------------------------------------------------------------
+// Dynamic UnRAR DLL loader
+// -----------------------------------------------------------------------
 
-// RAR4 block types
-#define RAR4_HEAD_FILE   0x74
+struct UnRarDll
+{
+    HMODULE              hDll            = NULL;
+    PFN_RAROpenArchiveEx pfnOpenArchiveEx = nullptr;
+    PFN_RARCloseArchive  pfnCloseArchive  = nullptr;
+    PFN_RARReadHeaderEx  pfnReadHeaderEx  = nullptr;
+    PFN_RARProcessFileW  pfnProcessFileW  = nullptr;
+    PFN_RARSetCallback   pfnSetCallback   = nullptr;
+
+    bool Load()
+    {
+        if (hDll) return true;
+
+        hDll = ::LoadLibraryW(L"unrar.dll");
+        if (!hDll) return false;
+
+        pfnOpenArchiveEx = reinterpret_cast<PFN_RAROpenArchiveEx>(
+            ::GetProcAddress(hDll, "RAROpenArchiveEx"));
+        pfnCloseArchive  = reinterpret_cast<PFN_RARCloseArchive>(
+            ::GetProcAddress(hDll, "RARCloseArchive"));
+        pfnReadHeaderEx  = reinterpret_cast<PFN_RARReadHeaderEx>(
+            ::GetProcAddress(hDll, "RARReadHeaderEx"));
+        pfnProcessFileW  = reinterpret_cast<PFN_RARProcessFileW>(
+            ::GetProcAddress(hDll, "RARProcessFileW"));
+        pfnSetCallback   = reinterpret_cast<PFN_RARSetCallback>(
+            ::GetProcAddress(hDll, "RARSetCallback"));
+
+        if (!pfnOpenArchiveEx || !pfnCloseArchive || !pfnReadHeaderEx ||
+            !pfnProcessFileW  || !pfnSetCallback)
+        {
+            ::FreeLibrary(hDll);
+            hDll            = NULL;
+            pfnOpenArchiveEx = nullptr;
+            pfnCloseArchive  = nullptr;
+            pfnReadHeaderEx  = nullptr;
+            pfnProcessFileW  = nullptr;
+            pfnSetCallback   = nullptr;
+            return false;
+        }
+        return true;
+    }
+
+    ~UnRarDll()
+    {
+        if (hDll) { ::FreeLibrary(hDll); hDll = NULL; }
+    }
+};
+
+static UnRarDll g_unrar;
+
+// -----------------------------------------------------------------------
+// UCM_PROCESSDATA callback — accumulates decompressed bytes
+// -----------------------------------------------------------------------
+
+struct ExtractionContext
+{
+    std::vector<BYTE>* pData = nullptr;
+};
+
+static int CALLBACK UnRarCallback(UINT msg, LPARAM userData, LPARAM p1, LPARAM p2)
+{
+    if (msg == UCM_PROCESSDATA)
+    {
+        ExtractionContext* ctx = reinterpret_cast<ExtractionContext*>(userData);
+        if (ctx && ctx->pData)
+        {
+            const BYTE* ptr  = reinterpret_cast<const BYTE*>(p1);
+            size_t      size = static_cast<size_t>(p2);
+            ctx->pData->insert(ctx->pData->end(), ptr, ptr + size);
+        }
+    }
+    return 1;
+}
+
+// -----------------------------------------------------------------------
+// Helpers shared by ParseRarHeader / ReadRarFileHeader
+// -----------------------------------------------------------------------
+
+// Convert a RARHeaderDataEx filename to a normalised wide string.
+static std::wstring HeaderFileName(const RARHeaderDataEx& hdr)
+{
+    std::wstring name;
+    if (hdr.FileNameW[0])
+    {
+        name = hdr.FileNameW;
+    }
+    else
+    {
+        // Filenames without a Unicode counterpart are encoded in the archive's
+        // host ANSI code page (CP_ACP), which is what the RAR4 spec requires.
+        int wlen = ::MultiByteToWideChar(CP_ACP, 0, hdr.FileName, -1, NULL, 0);
+        if (wlen > 1)
+        {
+            name.resize(wlen - 1);
+            ::MultiByteToWideChar(CP_ACP, 0, hdr.FileName, -1, &name[0], wlen);
+        }
+    }
+    std::replace(name.begin(), name.end(), L'\\', L'/');
+    return name;
+}
+
+// -----------------------------------------------------------------------
+// RarArchive implementation
+// -----------------------------------------------------------------------
 
 RarArchive::RarArchive() : m_hFile(INVALID_HANDLE_VALUE) {}
 
@@ -28,7 +130,12 @@ bool RarArchive::Open(const std::wstring& filePath)
     if (m_hFile == INVALID_HANDLE_VALUE) return false;
 
     m_filePath = filePath;
-    return ParseRarHeader();
+    if (!ParseRarHeader())
+    {
+        Close();
+        return false;
+    }
+    return true;
 }
 
 void RarArchive::Close()
@@ -152,142 +259,102 @@ std::wstring RarArchive::ExtractComicInfoXML()
 }
 
 // -----------------------------------------------------------------------
-// RAR4 header parser
+// UnRAR SDK — file listing
 // -----------------------------------------------------------------------
 
 bool RarArchive::ParseRarHeader()
 {
-    std::vector<BYTE> sig = ReadBytes(0, 8);
-    if (sig.size() < 7) return false;
+    if (!g_unrar.Load()) return false;
 
-    bool isRar4 = (memcmp(sig.data(), kRar4Sig, 7) == 0);
-    bool isRar5 = (sig.size() >= 8 && memcmp(sig.data(), kRar5Sig, 8) == 0);
+    RAROpenArchiveDataEx arcData = {};
+    // ArcNameW is declared as wchar_t* in the SDK (no const), but the SDK
+    // does not modify the path — the const_cast is safe here.
+    arcData.ArcNameW  = const_cast<wchar_t*>(m_filePath.c_str());
+    arcData.OpenMode  = RAR_OM_LIST;
 
-    if (!isRar4 && !isRar5) return false;
-    if (isRar5) return false;   // RAR5 needs external library; leave list empty
-
-    DWORD fileSize = ::GetFileSize(m_hFile, NULL);
-    if (fileSize == INVALID_FILE_SIZE) return false;
-
-    // RAR4: main archive header starts at offset 7
-    // Each block: HEAD_CRC(2) HEAD_TYPE(1) HEAD_FLAGS(2) HEAD_SIZE(2) [ADD_SIZE(4)]
-    DWORD pos = 7;
-    while (pos + 7 <= fileSize)
+    HANDLE hArc = g_unrar.pfnOpenArchiveEx(&arcData);
+    if (!hArc || arcData.OpenResult != ERAR_SUCCESS)
     {
-        std::vector<BYTE> blkHdr = ReadBytes(pos, 11);
-        if (blkHdr.size() < 7) break;
-
-        BYTE  headType  = blkHdr[2];
-        WORD  headFlags = ReadWord(blkHdr.data(), 3);
-        WORD  headSize  = ReadWord(blkHdr.data(), 5);
-
-        if (headSize < 7) break;    // safety
-
-        // ADD_SIZE present?
-        DWORD addSize = 0;
-        if (headFlags & 0x8000)
-        {
-            if (blkHdr.size() < 11) break;
-            addSize = ReadDWord(blkHdr.data(), 7);
-        }
-
-        if (headType == RAR4_HEAD_FILE)
-        {
-            // File header layout (offsets relative to block start):
-            //  0  HEAD_CRC        2
-            //  2  HEAD_TYPE       1
-            //  3  HEAD_FLAGS      2
-            //  5  HEAD_SIZE       2
-            //  7  PACK_SIZE       4
-            // 11  UNP_SIZE        4
-            // 15  HOST_OS         1
-            // 16  FILE_CRC        4
-            // 20  FTIME           4
-            // 24  UNP_VER         1
-            // 25  METHOD          1
-            // 26  NAME_SIZE       2
-            // 28  ATTR            4
-            // 32  [HIGH_PACK_SZ]  4  (if flag 0x100)
-            // 32  [HIGH_UNP_SZ]   4  (if flag 0x100)
-            // then file name (NAME_SIZE bytes, ANSI or Unicode if flag 0x200)
-
-            std::vector<BYTE> fhdr = ReadBytes(pos, headSize);
-            if (fhdr.size() < 32) { pos += headSize + addSize; continue; }
-
-            DWORD packSize = ReadDWord(fhdr.data(), 7);
-            DWORD unpSize  = ReadDWord(fhdr.data(), 11);
-            WORD  nameSize = ReadWord (fhdr.data(), 26);
-            DWORD attr     = ReadDWord(fhdr.data(), 28);
-
-            DWORD nameOff = 32;
-            if (headFlags & 0x100) nameOff += 8;    // HIGH_PACK/UNP sizes
-
-            // Full pack size (may span 64-bit)
-            if (headFlags & 0x100)
-            {
-                DWORD hiPack = ReadDWord(fhdr.data(), 32);
-                addSize = packSize | (static_cast<DWORD64>(hiPack) > 0 ? hiPack : 0);
-                // For our purposes just use packSize
-                addSize = packSize;
-            }
-            else
-            {
-                addSize = packSize;
-            }
-
-            RarFileInfo fi = {};
-            fi.FileSize       = unpSize;
-            fi.CompressedSize = packSize;
-            fi.IsDirectory    = (attr & 0x10) != 0;  // MS-DOS directory bit
-            fi.FileOffset     = pos + headSize;       // data follows full header
-
-            if (nameOff + nameSize <= fhdr.size())
-            {
-                const char* pName = reinterpret_cast<const char*>(fhdr.data() + nameOff);
-                if (headFlags & 0x200)  // Unicode filename
-                {
-                    // Unicode name: ANSI part terminated by '\0', then UTF-16LE
-                    size_t ansiLen = strnlen(pName, nameSize);
-                    const wchar_t* wName = reinterpret_cast<const wchar_t*>(pName + ansiLen + 1);
-                    size_t wAvail = (nameSize - ansiLen - 1) / sizeof(wchar_t);
-                    if (wAvail > 0)
-                        fi.FileName.assign(wName, wAvail);
-                    else
-                        fi.FileName.assign(pName, pName + ansiLen); // fall back to ANSI
-                }
-                else
-                {
-                    int wlen = ::MultiByteToWideChar(CP_ACP, 0, pName, (int)nameSize, NULL, 0);
-                    if (wlen > 0)
-                    {
-                        fi.FileName.resize(wlen);
-                        ::MultiByteToWideChar(CP_ACP, 0, pName, (int)nameSize, &fi.FileName[0], wlen);
-                    }
-                }
-            }
-
-            // Normalise path separators
-            std::replace(fi.FileName.begin(), fi.FileName.end(), L'\\', L'/');
-
-            m_fileList.push_back(fi);
-            pos += headSize + addSize;
-        }
-        else
-        {
-            pos += headSize + addSize;
-        }
+        if (hArc) g_unrar.pfnCloseArchive(hArc);
+        return false;
     }
 
+    RARHeaderDataEx hdr = {};
+    int ret;
+    while ((ret = g_unrar.pfnReadHeaderEx(hArc, &hdr)) == ERAR_SUCCESS)
+    {
+        RarFileInfo fi   = {};
+        fi.FileName      = HeaderFileName(hdr);
+        // RarFileInfo.FileSize is DWORD (32-bit); images in comic archives
+        // are never ≥ 4 GB so storing the lower 32 bits of UnpSize is safe.
+        fi.FileSize      = hdr.UnpSize;
+        fi.CompressedSize = hdr.PackSize;
+        fi.CRC32         = hdr.FileCRC;
+        fi.FileOffset    = 0;                 // not used with UnRAR SDK
+        fi.IsDirectory   = (hdr.FileAttr & 0x10) != 0;
+
+        m_fileList.push_back(fi);
+
+        // Must call ProcessFileW to advance the iterator; RAR_SKIP is free
+        g_unrar.pfnProcessFileW(hArc, RAR_SKIP, NULL, NULL);
+    }
+
+    g_unrar.pfnCloseArchive(hArc);
     return !m_fileList.empty();
 }
 
+// -----------------------------------------------------------------------
+// UnRAR SDK — file extraction (callback accumulates decompressed data)
+// -----------------------------------------------------------------------
+
 bool RarArchive::ReadRarFileHeader(const RarFileInfo& fileInfo, std::vector<BYTE>& data)
 {
-    // Only store-method (method 0x30) is extracted without decompression.
-    // Compressed files are returned empty – the tooltip will fall back gracefully.
-    data = ReadBytes(fileInfo.FileOffset, fileInfo.CompressedSize);
-    return !data.empty();
+    if (!g_unrar.Load()) return false;
+
+    ExtractionContext ctx;
+    ctx.pData = &data;
+    if (fileInfo.FileSize > 0)
+        data.reserve(fileInfo.FileSize);
+
+    RAROpenArchiveDataEx arcData = {};
+    // ArcNameW is declared as wchar_t* in the SDK (no const), but the SDK
+    // does not modify the path — the const_cast is safe here.
+    arcData.ArcNameW  = const_cast<wchar_t*>(m_filePath.c_str());
+    arcData.OpenMode  = RAR_OM_EXTRACT;
+    arcData.Callback  = UnRarCallback;
+    arcData.UserData  = reinterpret_cast<LPARAM>(&ctx);
+
+    HANDLE hArc = g_unrar.pfnOpenArchiveEx(&arcData);
+    if (!hArc || arcData.OpenResult != ERAR_SUCCESS)
+    {
+        if (hArc) g_unrar.pfnCloseArchive(hArc);
+        return false;
+    }
+
+    bool found = false;
+    RARHeaderDataEx hdr = {};
+    int ret;
+    while ((ret = g_unrar.pfnReadHeaderEx(hArc, &hdr)) == ERAR_SUCCESS)
+    {
+        std::wstring name = HeaderFileName(hdr);
+        // Case-insensitive match to be consistent with ExtractFile() above.
+        if (_wcsicmp(name.c_str(), fileInfo.FileName.c_str()) == 0)
+        {
+            // RAR_TEST decompresses into the callback; nothing is written to disk
+            g_unrar.pfnProcessFileW(hArc, RAR_TEST, NULL, NULL);
+            found = true;
+            break;
+        }
+        g_unrar.pfnProcessFileW(hArc, RAR_SKIP, NULL, NULL);
+    }
+
+    g_unrar.pfnCloseArchive(hArc);
+    return found && !data.empty();
 }
+
+// -----------------------------------------------------------------------
+// Low-level helpers (retained for binary compatibility with the header)
+// -----------------------------------------------------------------------
 
 DWORD RarArchive::ReadDWord(BYTE* buf, int off)
 {
@@ -305,7 +372,7 @@ WORD RarArchive::ReadWord(BYTE* buf, int off)
 
 std::vector<BYTE> RarArchive::ReadBytes(DWORD offset, DWORD size)
 {
-    if (size == 0) return {};
+    if (size == 0 || m_hFile == INVALID_HANDLE_VALUE) return {};
     std::vector<BYTE> buf(size);
 
     LARGE_INTEGER li;
