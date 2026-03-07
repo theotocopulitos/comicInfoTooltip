@@ -1,8 +1,8 @@
 // RarArchive.cpp : CBR (RAR) file handling implementation
 //
 // Uses the UnRAR DLL (unrar.dll) loaded dynamically at runtime to support
-// both RAR4 and RAR5 archives.  If unrar.dll is absent the archive returns
-// an empty file list, mirroring the previous fallback behaviour.
+// both RAR4 and RAR5 archives.  If unrar.dll is absent, RAR support is not
+// available and attempts to open RAR archives will fail accordingly.
 
 #include "pch.h"
 #include "RarArchive.h"
