@@ -12,6 +12,10 @@
 // Dynamic UnRAR DLL loader
 // -----------------------------------------------------------------------
 
+// Forward declaration — defined after g_unrar so Load() can take its address
+// to resolve the owning DLL's path via GetModuleHandleEx.
+static int CALLBACK UnRarCallback(UINT msg, LPARAM userData, LPARAM p1, LPARAM p2);
+
 struct UnRarDll
 {
     HMODULE              hDll            = NULL;
@@ -25,7 +29,37 @@ struct UnRarDll
     {
         if (hDll) return true;
 
-        HMODULE tmpH = ::LoadLibraryW(L"unrar.dll");
+        // Build a full path to unrar.dll placed alongside ComicTooltipExt.dll
+        // so we never accidentally load an unrar.dll from an arbitrary location
+        // on the process DLL search path.
+        wchar_t dllPath[MAX_PATH] = {};
+        HMODULE hSelf = NULL;
+        if (::GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(UnRarCallback),   // address inside this DLL
+                &hSelf) && hSelf)
+        {
+            DWORD len = ::GetModuleFileNameW(hSelf, dllPath, MAX_PATH);
+            if (len > 0 && len < MAX_PATH)
+            {
+                wchar_t* lastSlash = wcsrchr(dllPath, L'\\');
+                if (lastSlash)
+                {
+                    // Replace filename portion with unrar.dll.
+                    // Guard against arithmetic underflow before computing remaining.
+                    ptrdiff_t offset = lastSlash + 1 - dllPath;
+                    if (offset > 0 && static_cast<size_t>(offset) <= MAX_PATH)
+                    {
+                        size_t remaining = MAX_PATH - static_cast<size_t>(offset);
+                        if (wcscpy_s(lastSlash + 1, remaining, L"unrar.dll") != 0)
+                            dllPath[0] = L'\0';  // on failure fall back to bare name
+                    }
+                }
+            }
+        }
+
+        HMODULE tmpH = ::LoadLibraryW(dllPath[0] ? dllPath : L"unrar.dll");
         if (!tmpH) return false;
 
         PFN_RAROpenArchiveEx tmpOpenArchiveEx = reinterpret_cast<PFN_RAROpenArchiveEx>(
@@ -109,8 +143,12 @@ static std::wstring HeaderFileName(const RARHeaderDataEx& hdr)
         int wlen = ::MultiByteToWideChar(CP_ACP, 0, hdr.FileName, -1, NULL, 0);
         if (wlen > 1)
         {
-            name.resize(wlen - 1);
+            // Allocate room for the NUL that MultiByteToWideChar writes when
+            // the source length is -1, then strip it afterwards.
+            name.resize(wlen);
             ::MultiByteToWideChar(CP_ACP, 0, hdr.FileName, -1, &name[0], wlen);
+            if (!name.empty() && name.back() == L'\0')
+                name.pop_back();
         }
     }
     std::replace(name.begin(), name.end(), L'\\', L'/');
@@ -299,11 +337,22 @@ bool RarArchive::ParseRarHeader()
 
         m_fileList.push_back(fi);
 
-        // Must call ProcessFileW to advance the iterator; RAR_SKIP is free
-        g_unrar.pfnProcessFileW(hArc, RAR_SKIP, NULL, NULL);
+        // Must call ProcessFileW to advance the iterator; RAR_SKIP is free.
+        // Abort if the SDK reports an error advancing past the entry.
+        int skipRet = g_unrar.pfnProcessFileW(hArc, RAR_SKIP, NULL, NULL);
+        if (skipRet != ERAR_SUCCESS)
+            break;
     }
 
     g_unrar.pfnCloseArchive(hArc);
+
+    // ERAR_END_ARCHIVE is the expected loop exit; any other code signals a
+    // corrupt or unreadable archive — discard whatever was collected.
+    if (ret != ERAR_END_ARCHIVE)
+    {
+        m_fileList.clear();
+        return false;
+    }
     return !m_fileList.empty();
 }
 
@@ -336,6 +385,7 @@ bool RarArchive::ReadRarFileHeader(const RarFileInfo& fileInfo, std::vector<BYTE
     }
 
     bool found = false;
+    bool extractOk = false;
     RARHeaderDataEx hdr = {};
     int ret;
     while ((ret = g_unrar.pfnReadHeaderEx(hArc, &hdr)) == ERAR_SUCCESS)
@@ -344,16 +394,21 @@ bool RarArchive::ReadRarFileHeader(const RarFileInfo& fileInfo, std::vector<BYTE
         // Case-insensitive match to be consistent with ExtractFile() above.
         if (_wcsicmp(name.c_str(), fileInfo.FileName.c_str()) == 0)
         {
-            // RAR_TEST decompresses into the callback; nothing is written to disk
-            g_unrar.pfnProcessFileW(hArc, RAR_TEST, NULL, NULL);
-            found = true;
+            // RAR_TEST decompresses into the callback; nothing is written to disk.
+            // Key success off the SDK return code, not data.empty(), so that a
+            // legitimately zero-byte entry is handled correctly.
+            int procRet = g_unrar.pfnProcessFileW(hArc, RAR_TEST, NULL, NULL);
+            found     = true;
+            extractOk = (procRet == ERAR_SUCCESS);
             break;
         }
-        g_unrar.pfnProcessFileW(hArc, RAR_SKIP, NULL, NULL);
+        int skipRet = g_unrar.pfnProcessFileW(hArc, RAR_SKIP, NULL, NULL);
+        if (skipRet != ERAR_SUCCESS)
+            break;
     }
 
     g_unrar.pfnCloseArchive(hArc);
-    return found && !data.empty();
+    return found && extractOk;
 }
 
 // -----------------------------------------------------------------------
