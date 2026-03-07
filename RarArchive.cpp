@@ -81,7 +81,12 @@ private:
             }
         }
 
-        HMODULE tmpH = ::LoadLibraryW(dllPath[0] ? dllPath : L"unrar.dll");
+        // If we failed to construct a fully qualified path to unrar.dll,
+        // fail closed rather than falling back to the default DLL search path.
+        if (!dllPath[0])
+            return false;
+
+        HMODULE tmpH = ::LoadLibraryW(dllPath);
         if (!tmpH) return false;
 
         PFN_RAROpenArchiveEx tmpOpenArchiveEx = reinterpret_cast<PFN_RAROpenArchiveEx>(
