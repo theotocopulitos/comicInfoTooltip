@@ -25,32 +25,36 @@ struct UnRarDll
     {
         if (hDll) return true;
 
-        hDll = ::LoadLibraryW(L"unrar.dll");
-        if (!hDll) return false;
+        HMODULE tmpH = ::LoadLibraryW(L"unrar.dll");
+        if (!tmpH) return false;
 
-        pfnOpenArchiveEx = reinterpret_cast<PFN_RAROpenArchiveEx>(
-            ::GetProcAddress(hDll, "RAROpenArchiveEx"));
-        pfnCloseArchive  = reinterpret_cast<PFN_RARCloseArchive>(
-            ::GetProcAddress(hDll, "RARCloseArchive"));
-        pfnReadHeaderEx  = reinterpret_cast<PFN_RARReadHeaderEx>(
-            ::GetProcAddress(hDll, "RARReadHeaderEx"));
-        pfnProcessFileW  = reinterpret_cast<PFN_RARProcessFileW>(
-            ::GetProcAddress(hDll, "RARProcessFileW"));
-        pfnSetCallback   = reinterpret_cast<PFN_RARSetCallback>(
-            ::GetProcAddress(hDll, "RARSetCallback"));
+        PFN_RAROpenArchiveEx tmpOpenArchiveEx = reinterpret_cast<PFN_RAROpenArchiveEx>(
+            ::GetProcAddress(tmpH, "RAROpenArchiveEx"));
+        PFN_RARCloseArchive  tmpCloseArchive  = reinterpret_cast<PFN_RARCloseArchive>(
+            ::GetProcAddress(tmpH, "RARCloseArchive"));
+        PFN_RARReadHeaderEx  tmpReadHeaderEx  = reinterpret_cast<PFN_RARReadHeaderEx>(
+            ::GetProcAddress(tmpH, "RARReadHeaderEx"));
+        PFN_RARProcessFileW  tmpProcessFileW  = reinterpret_cast<PFN_RARProcessFileW>(
+            ::GetProcAddress(tmpH, "RARProcessFileW"));
+        PFN_RARSetCallback   tmpSetCallback   = reinterpret_cast<PFN_RARSetCallback>(
+            ::GetProcAddress(tmpH, "RARSetCallback"));
 
-        if (!pfnOpenArchiveEx || !pfnCloseArchive || !pfnReadHeaderEx ||
-            !pfnProcessFileW  || !pfnSetCallback)
+        if (!tmpOpenArchiveEx || !tmpCloseArchive || !tmpReadHeaderEx ||
+            !tmpProcessFileW  || !tmpSetCallback)
         {
-            ::FreeLibrary(hDll);
-            hDll            = NULL;
-            pfnOpenArchiveEx = nullptr;
-            pfnCloseArchive  = nullptr;
-            pfnReadHeaderEx  = nullptr;
-            pfnProcessFileW  = nullptr;
-            pfnSetCallback   = nullptr;
+            ::FreeLibrary(tmpH);
             return false;
         }
+
+        // All pointers resolved — publish atomically: hDll becomes non-null
+        // only after every pfn* member is valid, so other threads can never
+        // observe a non-null hDll with uninitialized function pointers.
+        pfnOpenArchiveEx = tmpOpenArchiveEx;
+        pfnCloseArchive  = tmpCloseArchive;
+        pfnReadHeaderEx  = tmpReadHeaderEx;
+        pfnProcessFileW  = tmpProcessFileW;
+        pfnSetCallback   = tmpSetCallback;
+        hDll             = tmpH;
         return true;
     }
 
