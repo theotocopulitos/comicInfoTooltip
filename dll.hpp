@@ -69,7 +69,7 @@ typedef int (CALLBACK *UNRARCALLBACK)(UINT msg, LPARAM UserData, LPARAM P1, LPAR
 // -----------------------------------------------------------------------
 // Structures — must match the binary layout of unrar.dll
 // -----------------------------------------------------------------------
-#pragma pack(1)
+#pragma pack(push, 1)
 
 struct RARHeaderDataEx
 {
@@ -126,7 +126,7 @@ struct RAROpenArchiveDataEx
     unsigned int  Reserved[25];
 };
 
-#pragma pack()
+#pragma pack(pop)
 
 // -----------------------------------------------------------------------
 // Function pointer typedefs (all __stdcall / PASCAL)

@@ -7,6 +7,7 @@
 #include "pch.h"
 #include "RarArchive.h"
 #include "dll.hpp"
+#include <mutex>
 
 // -----------------------------------------------------------------------
 // Dynamic UnRAR DLL loader
@@ -16,6 +17,12 @@
 // to resolve the owning DLL's path via GetModuleHandleEx.
 static int CALLBACK UnRarCallback(UINT msg, LPARAM userData, LPARAM p1, LPARAM p2);
 
+// Safety caps for archive-controlled allocation sizes.
+// Both limits are 64 MB: a shell-extension preview handles one image at a time,
+// so the per-entry cap and the per-extraction cap are intentionally the same.
+static const size_t MAX_ENTRY_BYTES = 64 * 1024 * 1024;   // 64 MB per file
+static const size_t MAX_TOTAL_BYTES = 64 * 1024 * 1024;   // 64 MB per extraction
+
 struct UnRarDll
 {
     HMODULE              hDll            = NULL;
@@ -24,11 +31,26 @@ struct UnRarDll
     PFN_RARReadHeaderEx  pfnReadHeaderEx  = nullptr;
     PFN_RARProcessFileW  pfnProcessFileW  = nullptr;
     PFN_RARSetCallback   pfnSetCallback   = nullptr;
+    std::once_flag       initOnce;
+    bool                 initResult       = false;
 
     bool Load()
     {
-        if (hDll) return true;
+        // Guarantee that DoLoad() is executed by exactly one thread; all
+        // subsequent callers (including concurrent ones) block until the first
+        // completes and then read the cached initResult.
+        std::call_once(initOnce, [this]() { initResult = DoLoad(); });
+        return initResult;
+    }
 
+    ~UnRarDll()
+    {
+        if (hDll) { ::FreeLibrary(hDll); hDll = NULL; }
+    }
+
+private:
+    bool DoLoad()
+    {
         // Build a full path to unrar.dll placed alongside ComicTooltipExt.dll
         // so we never accidentally load an unrar.dll from an arbitrary location
         // on the process DLL search path.
@@ -91,11 +113,6 @@ struct UnRarDll
         hDll             = tmpH;
         return true;
     }
-
-    ~UnRarDll()
-    {
-        if (hDll) { ::FreeLibrary(hDll); hDll = NULL; }
-    }
 };
 
 static UnRarDll g_unrar;
@@ -106,7 +123,9 @@ static UnRarDll g_unrar;
 
 struct ExtractionContext
 {
-    std::vector<BYTE>* pData = nullptr;
+    std::vector<BYTE>* pData        = nullptr;
+    size_t             currentSize  = 0;
+    bool               limitReached = false;
 };
 
 static int CALLBACK UnRarCallback(UINT msg, LPARAM userData, LPARAM p1, LPARAM p2)
@@ -114,11 +133,19 @@ static int CALLBACK UnRarCallback(UINT msg, LPARAM userData, LPARAM p1, LPARAM p
     if (msg == UCM_PROCESSDATA)
     {
         ExtractionContext* ctx = reinterpret_cast<ExtractionContext*>(userData);
-        if (ctx && ctx->pData)
+        if (ctx && ctx->pData && !ctx->limitReached)
         {
             const BYTE* ptr  = reinterpret_cast<const BYTE*>(p1);
             size_t      size = static_cast<size_t>(p2);
+            if (ctx->currentSize + size > MAX_TOTAL_BYTES)
+            {
+                // Refuse oversized data and signal an error to UnRAR so the
+                // extraction is aborted rather than filling memory unboundedly.
+                ctx->limitReached = true;
+                return -1;
+            }
             ctx->pData->insert(ctx->pData->end(), ptr, ptr + size);
+            ctx->currentSize += size;
         }
     }
     return 1;
@@ -353,7 +380,8 @@ bool RarArchive::ParseRarHeader()
         m_fileList.clear();
         return false;
     }
-    return !m_fileList.empty();
+    // A valid archive that happens to be empty is not an error.
+    return true;
 }
 
 // -----------------------------------------------------------------------
@@ -366,6 +394,10 @@ bool RarArchive::ReadRarFileHeader(const RarFileInfo& fileInfo, std::vector<BYTE
 
     ExtractionContext ctx;
     ctx.pData = &data;
+    // Refuse to even attempt extracting entries that exceed the safety cap —
+    // the archive header is attacker-controlled and cannot be trusted.
+    if (static_cast<size_t>(fileInfo.FileSize) > MAX_ENTRY_BYTES)
+        return false;
     if (fileInfo.FileSize > 0)
         data.reserve(fileInfo.FileSize);
 
