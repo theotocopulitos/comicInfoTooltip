@@ -235,7 +235,8 @@ std::vector<BYTE> RarArchive::ExtractFile(const std::wstring& fileName)
     {
         if (!fi.IsDirectory && _wcsicmp(fi.FileName.c_str(), fileName.c_str()) == 0)
         {
-            ReadRarFileHeader(fi, result);
+            if (!ReadRarFileHeader(fi, result))
+                result.clear();   // ensure callers never see partial data
             break;
         }
     }
@@ -461,6 +462,13 @@ bool RarArchive::ReadRarFileHeader(const RarFileInfo& fileInfo, std::vector<BYTE
     }
 
     g_unrar.pfnCloseArchive(hArc);
+
+    // Clear any partial bytes that may have been appended via the callback
+    // before an error (e.g., MAX_TOTAL_BYTES exceeded mid-stream).  Callers
+    // must not process truncated image data.
+    if (!found || !extractOk)
+        data.clear();
+
     return found && extractOk;
 }
 
