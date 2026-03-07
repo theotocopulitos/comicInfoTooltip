@@ -144,7 +144,7 @@ If a ProgID is registered for `.cbz`/`.cbr` (e.g. `cYo.ComicRack`), the preview 
 ### Security
 
 - Read-only file access; no writes except temporary files (cleaned up automatically).
-- No network access or external dependencies.
+- No network access; no compile-time external dependencies. CBR preview requires the RARLAB UnRAR DLL (`unrar.dll`) at runtime — it is loaded dynamically, and if absent CBRs degrade gracefully to filename/size tooltips.
 - The preview handler runs in the `prevhost.exe` surrogate process, isolated from Explorer.
 
 ## License
