@@ -4,6 +4,7 @@
 #include "ComicPreviewHandler.h"
 #include "ZipArchive.h"
 #include "RarArchive.h"
+#include "ArchiveDetect.h"
 
 // {B5E84A2F-3D71-4C8A-9F20-1A2B3C4D5E6F}
 const CLSID CLSID_ComicPreviewHandler =
@@ -199,6 +200,10 @@ STDMETHODIMP CComicPreviewHandler::GetSite(REFIID riid, void** ppvSite)
 
 bool CComicPreviewHandler::IsCBZFile() const
 {
+    // Detect by magic bytes first, fall back to extension
+    ArchiveFormat fmt = DetectArchiveFormat(m_filePath.c_str());
+    if (fmt == ArchiveFormat::Zip) return true;
+    if (fmt == ArchiveFormat::Rar) return false;
     auto ext = m_filePath;
     std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
     return ext.size() >= 4 && ext.substr(ext.size() - 4) == L".cbz";
@@ -206,6 +211,10 @@ bool CComicPreviewHandler::IsCBZFile() const
 
 bool CComicPreviewHandler::IsCBRFile() const
 {
+    // Detect by magic bytes first, fall back to extension
+    ArchiveFormat fmt = DetectArchiveFormat(m_filePath.c_str());
+    if (fmt == ArchiveFormat::Rar) return true;
+    if (fmt == ArchiveFormat::Zip) return false;
     auto ext = m_filePath;
     std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
     return ext.size() >= 4 && ext.substr(ext.size() - 4) == L".cbr";

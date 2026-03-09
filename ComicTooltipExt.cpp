@@ -10,6 +10,7 @@ DEFINE_GUID(CLSID_ComicTooltipExt,
 #include "ComicTooltipExt.h"
 #include "ZipArchive.h"
 #include "RarArchive.h"
+#include "ArchiveDetect.h"
 
 
 // IPersist
@@ -71,11 +72,17 @@ CString CComicTooltipExt::GetFileExtension()
 
 bool CComicTooltipExt::IsCBRFile()
 {
+    ArchiveFormat fmt = DetectArchiveFormat(m_strFileName.GetString());
+    if (fmt == ArchiveFormat::Rar) return true;
+    if (fmt == ArchiveFormat::Zip) return false;
     return GetFileExtension().CompareNoCase(L"cbr") == 0;
 }
 
 bool CComicTooltipExt::IsCBZFile()
 {
+    ArchiveFormat fmt = DetectArchiveFormat(m_strFileName.GetString());
+    if (fmt == ArchiveFormat::Zip) return true;
+    if (fmt == ArchiveFormat::Rar) return false;
     return GetFileExtension().CompareNoCase(L"cbz") == 0;
 }
 
