@@ -94,6 +94,7 @@
   <ItemGroup>
     <ClInclude Include="ComicInfo.h" />
     <ClInclude Include="ComicTooltipExt.h" />
+    <ClInclude Include="dll.hpp" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="targetver.h" />
